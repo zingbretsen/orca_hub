@@ -113,6 +113,10 @@ defmodule OrcaHub.Application do
       # Runs on hub + agent — a fork child runs wherever its parent does.
       OrcaHub.ForkGate,
       OrcaHub.TerminalSupervisor,
+      # Marks this node's own "running" terminal rows that have no live
+      # runner (a restart killed them) as dead, once, after boot. Hub +
+      # agent. See OrcaHub.TerminalSweep moduledoc.
+      OrcaHub.TerminalSweep,
       # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — the
       # detached OS processes themselves are NOT children of this
       # supervisor (see OrcaHub.Jobs.Launcher); it only supervises the
@@ -205,6 +209,8 @@ defmodule OrcaHub.Application do
       # see the matching hub_children/1 comment above.
       OrcaHub.ForkGate,
       OrcaHub.TerminalSupervisor,
+      # See the matching hub_children/1 comment above.
+      OrcaHub.TerminalSweep,
       # Per-node DynamicSupervisor for OrcaHub.JobWatcher processes — see
       # the matching hub_children/1 comment above.
       OrcaHub.JobSupervisor,

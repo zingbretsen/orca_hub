@@ -6,23 +6,30 @@
     {@terminal.name}
     <span class={[
       "badge badge-sm",
-      @terminal.status == "running" && "badge-success",
-      @terminal.status == "stopped" && "badge-ghost",
-      @terminal.status == "dead" && "badge-error"
+      @status == "running" && "badge-success",
+      @status == "stopped" && "badge-ghost",
+      @status == "dead" && "badge-error"
     ]}>
-      {@terminal.status}
+      {@status}
+    </span>
+    <span
+      :if={@node_unreachable}
+      class="badge badge-sm badge-warning"
+      title="Its node is not connected; the status is the last one recorded."
+    >
+      node offline
     </span>
   </div>
   <:actions>
     <button
-      :if={@terminal.status != "running"}
+      :if={@status != "running"}
       phx-click="start_terminal"
       class="btn btn-sm btn-success"
     >
       <.icon name="hero-play-micro" class="size-4" /> Start
     </button>
     <button
-      :if={@terminal.status == "running"}
+      :if={@status == "running"}
       phx-click="stop_terminal"
       class="btn btn-sm btn-error"
     >
@@ -51,7 +58,7 @@
 </div>
 
 <div
-  :if={@terminal.status == "running"}
+  :if={@status == "running"}
   id={"terminal-#{@terminal.id}"}
   phx-hook="Terminal"
   data-terminal-id={@terminal.id}
@@ -62,7 +69,7 @@
 </div>
 
 <div
-  :if={@terminal.status != "running"}
+  :if={@status != "running"}
   class="mt-4 bg-base-200 rounded-lg p-8 text-center text-base-content/50"
 >
   <p :if={is_integer(@exit_code)} class="text-sm">Shell exited with code {@exit_code}.</p>

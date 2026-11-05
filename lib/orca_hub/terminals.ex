@@ -30,6 +30,27 @@ defmodule OrcaHub.Terminals do
     )
   end
 
+  @doc "Rows reading `\"running\"` whose `runner_node` is `node_name` (the boot sweep)."
+  def list_running_terminals_for_node(node_name) when is_binary(node_name) do
+    Repo.all(from t in Terminal, where: t.status == "running" and t.runner_node == ^node_name)
+  end
+
+  @doc """
+  Sets `status` on the row only if it still reads `from`; returns the number
+  of rows updated (0 or 1). A conditional write, so a reconcile never
+  clobbers a status a live runner wrote in the meantime.
+  """
+  def reconcile_terminal_status(id, from, status)
+      when is_binary(from) and status in ~w(stopped running dead) do
+    {count, _} =
+      Repo.update_all(
+        from(t in Terminal, where: t.id == ^id and t.status == ^from),
+        set: [status: status, updated_at: NaiveDateTime.utc_now(:second)]
+      )
+
+    count
+  end
+
   def get_terminal!(id), do: Repo.get!(Terminal, id) |> Repo.preload(:project)
 
   def get_terminal(id) do

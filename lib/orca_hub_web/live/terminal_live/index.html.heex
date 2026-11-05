@@ -76,7 +76,14 @@
     <:col :let={terminal} label="Name" class="w-1/4">
       <span class="font-medium">{terminal.name}</span>
       <span class="badge badge-xs ml-1">
-        {terminal.status}
+        {@statuses[terminal.id]}
+      </span>
+      <span
+        :if={MapSet.member?(@unreachable, terminal.id)}
+        class="badge badge-xs badge-warning ml-1"
+        title="Its node is not connected; the status is the last one recorded."
+      >
+        node offline
       </span>
       <span
         :if={@clustered && Map.get(@node_map, terminal.id)}
@@ -92,14 +99,14 @@
       <span class="badge badge-sm">
         <span
           class="inline-block w-2 h-2 rounded-full mr-1.5"
-          style={terminal_status_color(terminal.status)}
+          style={terminal_status_color(@statuses[terminal.id])}
         />
-        {terminal.status}
+        {@statuses[terminal.id]}
       </span>
     </:col>
     <:action :let={terminal}>
       <button
-        :if={terminal.status != "running"}
+        :if={@statuses[terminal.id] != "running"}
         phx-click="start_terminal"
         phx-value-id={terminal.id}
         class="btn btn-ghost btn-xs"
@@ -108,7 +115,7 @@
         <.icon name="hero-play-micro" class="size-4" />
       </button>
       <button
-        :if={terminal.status == "running"}
+        :if={@statuses[terminal.id] == "running"}
         phx-click="stop_terminal"
         phx-value-id={terminal.id}
         class="btn btn-ghost btn-xs"

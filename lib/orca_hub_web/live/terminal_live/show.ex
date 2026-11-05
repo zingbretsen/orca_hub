@@ -8,6 +8,11 @@ defmodule OrcaHubWeb.TerminalLive.Show do
     terminal = find_terminal!(id)
     n = Cluster.runner_node_for(terminal)
 
+    # Status and exit events for every terminal (never output); see
+    # TerminalRunner.broadcast/2. Without this a stop, an idle teardown or
+    # an exit while no xterm was mounted would never reach this page.
+    if connected?(socket), do: Phoenix.PubSub.subscribe(OrcaHub.PubSub, "terminals")
+
     {:ok,
      socket
      |> assign(
@@ -15,45 +20,37 @@ defmodule OrcaHubWeb.TerminalLive.Show do
        runner_node: n,
        exit_code: nil,
        page_title: terminal.name
-     )}
+     )
+     |> assign_status()}
   end
 
   @impl true
   def handle_event("start_terminal", _params, socket) do
-    terminal = socket.assigns.terminal
-    n = socket.assigns.runner_node
-
-    case Cluster.start_terminal(n, terminal.id) do
-      {:ok, _pid} ->
-        {:noreply, refresh_terminal(socket)}
-
-      {:error, {:already_started, _}} ->
-        {:noreply, socket}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
-    end
+    {:noreply, start(socket, "Failed to start")}
   end
 
   def handle_event("stop_terminal", _params, socket) do
-    terminal = socket.assigns.terminal
-    n = socket.assigns.runner_node
-    Cluster.stop_terminal(n, terminal.id)
-    {:noreply, refresh_terminal(socket)}
+    case Cluster.stop_terminal(socket.assigns.runner_node, socket.assigns.terminal.id) do
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, Cluster.terminal_stop_error_message(reason))
+         |> refresh_terminal()}
+
+      _stopped_or_reconciled ->
+        {:noreply, refresh_terminal(socket)}
+    end
   end
 
+  # The stop is synchronous (the old runner and its shell are gone when it
+  # returns), so the start can follow immediately.
   def handle_event("restart_terminal", _params, socket) do
-    terminal = socket.assigns.terminal
-    n = socket.assigns.runner_node
+    case Cluster.stop_terminal(socket.assigns.runner_node, socket.assigns.terminal.id) do
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, Cluster.terminal_stop_error_message(reason))}
 
-    if terminal.status == "running" do
-      # Stop, then give the PTY a moment to release before starting again.
-      # Non-blocking: continue in the :restart_terminal handle_info clause.
-      Cluster.stop_terminal(n, terminal.id)
-      Process.send_after(self(), :restart_terminal, 200)
-      {:noreply, socket}
-    else
-      {:noreply, start_terminal_for_restart(socket)}
+      _stopped_or_not_running ->
+        {:noreply, start(socket, "Failed to restart")}
     end
   end
 
@@ -69,20 +66,27 @@ defmodule OrcaHubWeb.TerminalLive.Show do
   end
 
   @impl true
-  def handle_info(:restart_terminal, socket) do
-    {:noreply, start_terminal_for_restart(socket)}
+  def handle_info({id, {:terminal_exit, code}}, %{assigns: %{terminal: %{id: id}}} = socket) do
+    {:noreply, socket |> assign(exit_code: code) |> refresh_terminal()}
   end
 
-  defp start_terminal_for_restart(socket) do
-    terminal = socket.assigns.terminal
-    n = socket.assigns.runner_node
+  def handle_info({id, {:terminal_status, _status}}, %{assigns: %{terminal: %{id: id}}} = socket) do
+    {:noreply, refresh_terminal(socket)}
+  end
 
-    case Cluster.start_terminal(n, terminal.id) do
+  def handle_info(_other_terminal_event, socket), do: {:noreply, socket}
+
+  defp start(socket, failure) do
+    case Cluster.start_terminal(socket.assigns.runner_node, socket.assigns.terminal.id) do
       {:ok, _pid} ->
         refresh_terminal(socket)
 
+      {:error, {:already_started, _}} ->
+        refresh_terminal(socket)
+
       {:error, reason} ->
-        put_flash(socket, :error, "Failed to restart: #{inspect(reason)}")
+        message = Cluster.terminal_node_error_message(reason) || "#{failure}: #{inspect(reason)}"
+        put_flash(socket, :error, message)
     end
   end
 
@@ -97,12 +101,22 @@ defmodule OrcaHubWeb.TerminalLive.Show do
         |> put_flash(:info, "Terminal #{current.name} was deleted.")
         |> push_navigate(to: ~p"/terminals")
 
-      %{status: "running"} = terminal ->
-        assign(socket, terminal: terminal, exit_code: nil)
-
       terminal ->
-        assign(socket, terminal: terminal)
+        socket |> assign(terminal: terminal) |> assign_status()
     end
+  end
+
+  # @status is what the page shows and branches on: a live runner wins over
+  # the row, so a row left "running" by a node restart shows "dead" with a
+  # Start button instead of a Stop that hits nothing.
+  defp assign_status(socket) do
+    %{terminal: terminal, runner_node: n} = socket.assigns
+    liveness = Map.get(Cluster.terminal_liveness([{n, terminal}]), terminal.id, :unknown)
+    status = Cluster.terminal_display_status(terminal, liveness)
+
+    socket
+    |> assign(status: status, node_unreachable: liveness == :unknown)
+    |> then(fn s -> if status == "running", do: assign(s, exit_code: nil), else: s end)
   end
 
   # Cluster.get_terminal!/2 refuses ({:error, ...}) rather than raising when

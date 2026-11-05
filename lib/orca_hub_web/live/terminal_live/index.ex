@@ -74,14 +74,26 @@ defmodule OrcaHubWeb.TerminalLive.Index do
         {:noreply, socket}
 
       {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Failed to start: #{inspect(reason)}")}
+        message =
+          Cluster.terminal_node_error_message(reason) || "Failed to start: #{inspect(reason)}"
+
+        {:noreply, put_flash(socket, :error, message)}
     end
   end
 
   def handle_event("stop_terminal", %{"id" => id}, socket) do
     n = Map.get(socket.assigns.node_map, id, node())
-    Cluster.stop_terminal(n, id)
-    {:noreply, reload_terminals(socket)}
+
+    case Cluster.stop_terminal(n, id) do
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, Cluster.terminal_stop_error_message(reason))
+         |> reload_terminals()}
+
+      _stopped_or_reconciled ->
+        {:noreply, reload_terminals(socket)}
+    end
   end
 
   def handle_event("delete_terminal", %{"id" => id}, socket) do
@@ -160,11 +172,21 @@ defmodule OrcaHubWeb.TerminalLive.Index do
 
     node_map = Cluster.build_node_map(tagged_terminals)
     terminals = Enum.map(tagged_terminals, fn {_node, terminal} -> terminal end)
+    liveness = Cluster.terminal_liveness(tagged_terminals)
+
+    statuses =
+      Map.new(terminals, fn t ->
+        {t.id, Cluster.terminal_display_status(t, Map.get(liveness, t.id, :unknown))}
+      end)
 
     {pinned, rest} = Enum.split_with(terminals, & &1.pinned_at)
 
     assign(socket,
       terminals: terminals,
+      # Shown status per id: a live runner wins over the row (see
+      # Cluster.terminal_display_status/2).
+      statuses: statuses,
+      unreachable: for({id, :unknown} <- liveness, into: MapSet.new(), do: id),
       pinned_terminals: Enum.sort_by(pinned, & &1.pinned_at, {:desc, DateTime}),
       grouped_terminals: build_groups(rest),
       node_map: node_map,

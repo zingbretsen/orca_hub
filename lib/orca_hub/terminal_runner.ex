@@ -333,11 +333,22 @@ defmodule OrcaHub.TerminalRunner do
     end
   end
 
-  defp broadcast(terminal_id, payload) do
+  @doc """
+  Broadcasts a terminal event. Everything goes to `term_output:<id>` (the
+  channels). Status and exit events also go to the aggregate `terminals`
+  topic as `{terminal_id, payload}` for the LiveViews; output does not, since
+  every chunk used to make an open index page re-query the whole list.
+  """
+  def broadcast(terminal_id, payload) do
     # Use "term_output:" prefix for per-terminal broadcasts to avoid
     # colliding with Phoenix Channel's internal PubSub on "terminal:" topic
     Phoenix.PubSub.broadcast(OrcaHub.PubSub, "term_output:#{terminal_id}", payload)
-    Phoenix.PubSub.broadcast(OrcaHub.PubSub, "terminals", {terminal_id, payload})
+
+    unless match?({:terminal_output, _}, payload) do
+      Phoenix.PubSub.broadcast(OrcaHub.PubSub, "terminals", {terminal_id, payload})
+    end
+
+    :ok
   end
 
   defp truncate_scrollback(data, max_size) when byte_size(data) > max_size do

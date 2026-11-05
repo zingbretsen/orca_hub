@@ -747,6 +747,71 @@ defmodule OrcaHub.Cluster do
     end
   end
 
+  @doc """
+  Whether each terminal has a live runner on its own node, one RPC per
+  node: `%{terminal_id => true | false | :unknown}` for `[{node, terminal}]`
+  (`list_terminals/0`'s shape). `:unknown` when that node can't be asked;
+  no other node answers for it.
+
+  Display-only, so a node that is not connected right now is `:unknown`
+  without the `Node.connect/1` heal or hub relay that `rpc/5` tries: one
+  offline node must not stall a page render for the connect timeout.
+  """
+  def terminal_liveness(tagged_terminals) do
+    tagged_terminals
+    |> Enum.group_by(fn {n, _terminal} -> n end, fn {_n, terminal} -> terminal.id end)
+    |> Enum.flat_map(fn {n, ids} ->
+      result =
+        if node_available?(n),
+          do: rpc(n, TerminalSupervisor, :alive_terminal_ids, [ids]),
+          else: {:error, {:node_unavailable, n}}
+
+      case result do
+        alive when is_list(alive) ->
+          alive = MapSet.new(alive)
+          Enum.map(ids, &{&1, MapSet.member?(alive, &1)})
+
+        _error ->
+          Enum.map(ids, &{&1, :unknown})
+      end
+    end)
+    |> Map.new()
+  end
+
+  @doc """
+  The status to show for a terminal: its live runner wins over the row. A
+  row that reads `"running"` with no runner (killed with its node, never
+  reconciled) shows `"dead"`; an unreachable node leaves the row's word.
+  """
+  def terminal_display_status(_terminal, true), do: "running"
+  def terminal_display_status(%{status: "running"}, false), do: "dead"
+  def terminal_display_status(%{status: status}, _liveness), do: status
+
+  @doc """
+  `node_unavailable_message/1`'s counterpart worded for a terminal, or nil
+  when `reason` is not a node error.
+  """
+  def terminal_node_error_message(:node_unassigned),
+    do: "This terminal has no assigned node."
+
+  def terminal_node_error_message({:node_unavailable, n}),
+    do:
+      "This terminal's node (#{node_name(n)}) is not currently connected to the cluster, " <>
+        "so it cannot be reached."
+
+  def terminal_node_error_message({:node_check_failed, n}),
+    do:
+      "Could not confirm whether this terminal's node (#{node_name(n)}) is connected — " <>
+        "the hub could not be reached to check."
+
+  def terminal_node_error_message({:error, reason}), do: terminal_node_error_message(reason)
+  def terminal_node_error_message(_), do: nil
+
+  @doc "User-facing text for a failed `stop_terminal/2`."
+  def terminal_stop_error_message(reason) do
+    terminal_node_error_message(reason) || "Failed to stop the terminal: #{inspect(reason)}"
+  end
+
   # -------------------------------------------------------------------
   # Node login (Claude Code OAuth, per-node)
   # -------------------------------------------------------------------

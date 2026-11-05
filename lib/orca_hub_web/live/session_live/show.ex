@@ -2401,7 +2401,7 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
           {:error, reason} ->
             message =
-              Cluster.node_unavailable_message(reason) ||
+              Cluster.terminal_node_error_message(reason) ||
                 "Failed to restart terminal: #{inspect(reason)}"
 
             {:noreply, put_flash(socket, :error, message)}

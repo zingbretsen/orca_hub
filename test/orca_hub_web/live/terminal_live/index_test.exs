@@ -78,6 +78,69 @@ defmodule OrcaHubWeb.TerminalLive.IndexTest do
     end
   end
 
+  describe "status and Stop" do
+    test "a row left running with no runner shows dead, and Stop is not offered", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Ghost #{suffix}",
+          directory: "/tmp/ghost-term-#{suffix}",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/terminals")
+
+      assert has_element?(
+               view,
+               ~s(button[phx-click="start_terminal"][phx-value-id="#{terminal.id}"])
+             )
+
+      refute has_element?(
+               view,
+               ~s(button[phx-click="stop_terminal"][phx-value-id="#{terminal.id}"])
+             )
+    end
+
+    test "Stop on an offline node's terminal flashes node unavailable", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Offline #{suffix}",
+          directory: "/tmp/offline-term-#{suffix}",
+          status: "running",
+          runner_node: "orca@offline-#{suffix}"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/terminals")
+      assert html =~ "node offline"
+
+      html = render_click(view, "stop_terminal", %{"id" => terminal.id})
+
+      assert html =~ "is not currently connected"
+      assert Terminals.get_terminal(terminal.id).status == "running"
+    end
+
+    test "Stop on a ghost row reconciles it to stopped", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Ghost stop #{suffix}",
+          directory: "/tmp/ghost-stop-#{suffix}",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/terminals")
+      render_click(view, "stop_terminal", %{"id" => terminal.id})
+
+      assert Terminals.get_terminal(terminal.id).status == "stopped"
+    end
+  end
+
   describe "pinning" do
     test "pinning a terminal moves it into the Pinned section", %{conn: conn} do
       suffix = System.unique_integer([:positive])

@@ -50,6 +50,54 @@ defmodule OrcaHubWeb.TerminalLive.ShowTest do
     assert html =~ terminal.name
   end
 
+  describe "status follows the runner, not just the row" do
+    test "a row left running with no runner shows dead and offers Start, not Stop", %{
+      conn: conn,
+      terminal: terminal
+    } do
+      {:ok, terminal} =
+        Terminals.update_terminal(terminal, %{
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/terminals/#{terminal.id}")
+
+      assert has_element?(view, "span.badge", "dead")
+      assert has_element?(view, "button", "Start")
+      refute has_element?(view, "button", "Stop")
+      refute has_element?(view, "#terminal-#{terminal.id}")
+    end
+
+    test "Stop on a terminal whose node is offline says so instead of doing nothing", %{
+      conn: conn,
+      terminal: terminal
+    } do
+      {:ok, terminal} =
+        Terminals.update_terminal(terminal, %{status: "running", runner_node: "orca@some-agent"})
+
+      {:ok, view, _html} = live(conn, ~p"/terminals/#{terminal.id}")
+      assert has_element?(view, "span.badge", "node offline")
+
+      html = view |> element("button", "Stop") |> render_click()
+
+      assert html =~ "is not currently connected"
+      assert Terminals.get_terminal(terminal.id).status == "running"
+    end
+
+    test "a status broadcast for this terminal updates the page", %{
+      conn: conn,
+      terminal: terminal
+    } do
+      {:ok, view, _html} = live(conn, ~p"/terminals/#{terminal.id}")
+
+      {:ok, _} = Terminals.update_terminal(terminal, %{status: "dead"})
+      OrcaHub.TerminalRunner.broadcast(terminal.id, {:terminal_exit, 7})
+
+      assert render(view) =~ "Shell exited with code 7."
+    end
+  end
+
   test "an unknown id raises Ecto.NoResultsError, same as before the fan-out removal", %{
     conn: conn
   } do

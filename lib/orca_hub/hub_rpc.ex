@@ -431,6 +431,12 @@ defmodule OrcaHub.HubRPC do
   def pin_terminal(terminal), do: call(OrcaHub.Terminals, :pin_terminal, [terminal])
   def unpin_terminal(terminal), do: call(OrcaHub.Terminals, :unpin_terminal, [terminal])
 
+  def list_running_terminals_for_node(node_name),
+    do: call(OrcaHub.Terminals, :list_running_terminals_for_node, [node_name])
+
+  def reconcile_terminal_status(id, from, status),
+    do: call(OrcaHub.Terminals, :reconcile_terminal_status, [id, from, status])
+
   # -------------------------------------------------------------------
   # Discord Channels (Discord channel -> project/session mappings)
   # -------------------------------------------------------------------
