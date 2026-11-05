@@ -6,14 +6,23 @@ defmodule OrcaHubWeb.QueueLive do
 
   import OrcaHubWeb.AskUserQuestionComponent
 
+  # A status change arrives twice (the session's own topic and "sessions"),
+  # and turn ends cluster; one reload covers the whole burst.
+  @reload_debounce_ms 200
+
   @impl true
   def mount(_params, _session, socket) do
-    node_filter = socket.assigns.node_filter
     queue_filter = :all
-    {entries, node_map, aq_questions} = load_entries_with_nodes(node_filter, queue_filter)
+
+    socket =
+      socket
+      |> assign(:queue_filter, queue_filter)
+      |> assign(:aq_cache, %{})
+      |> assign(:reload_timer, nil)
+      |> load_queue()
 
     if connected?(socket) do
-      for {session, _msg} <- entries do
+      for {session, _msg} <- socket.assigns.entries do
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
       end
 
@@ -22,9 +31,6 @@ defmodule OrcaHubWeb.QueueLive do
 
     {:ok,
      socket
-     |> assign(:entries, entries)
-     |> assign(:node_map, node_map)
-     |> assign(:aq_questions, aq_questions)
      |> assign(:aq_state, %{})
      |> assign(:clustered, Node.list() != [])
      |> assign(:prompt, "")
@@ -34,7 +40,6 @@ defmodule OrcaHubWeb.QueueLive do
      |> assign(:page_title, "Queue")
      |> assign(:undo_archive_session, nil)
      |> assign(:undo_archive_timer, nil)
-     |> assign(:queue_filter, queue_filter)
      |> maybe_push_tts_config()}
   end
 
@@ -80,16 +85,11 @@ defmodule OrcaHubWeb.QueueLive do
       session = Cluster.get_session!(node, session_id)
       Cluster.unarchive_session(node, session)
 
-      {entries, node_map, aq_questions} =
-        load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
-
       {:noreply,
        socket
        |> cancel_undo_timer()
        |> assign(undo_archive_session: nil)
-       |> assign(:entries, entries)
-       |> assign(:node_map, node_map)
-       |> assign(:aq_questions, aq_questions)}
+       |> load_queue()}
     else
       {:noreply, socket}
     end
@@ -141,14 +141,7 @@ defmodule OrcaHubWeb.QueueLive do
     session = Cluster.get_session!(node, id)
     Cluster.defer_session(node, session)
 
-    {entries, node_map, aq_questions} =
-      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
-
-    {:noreply,
-     socket
-     |> assign(:entries, entries)
-     |> assign(:node_map, node_map)
-     |> assign(:aq_questions, aq_questions)}
+    {:noreply, load_queue(socket)}
   end
 
   def handle_event("delegate", %{"id" => id, "prompt" => prompt}, socket) do
@@ -332,15 +325,7 @@ defmodule OrcaHubWeb.QueueLive do
   def handle_event("set_filter", %{"filter" => filter}, socket) do
     filter = String.to_existing_atom(filter)
 
-    {entries, node_map, aq_questions} =
-      load_entries_with_nodes(socket.assigns.node_filter, filter)
-
-    {:noreply,
-     socket
-     |> assign(:queue_filter, filter)
-     |> assign(:entries, entries)
-     |> assign(:node_map, node_map)
-     |> assign(:aq_questions, aq_questions)}
+    {:noreply, socket |> assign(:queue_filter, filter) |> load_queue()}
   end
 
   def handle_event("validate", %{"prompt" => prompt}, socket) do
@@ -356,59 +341,56 @@ defmodule OrcaHubWeb.QueueLive do
     {:noreply, assign(socket, undo_archive_session: nil, undo_archive_timer: nil)}
   end
 
+  # From the session's own topic: no id, and always paired with the
+  # "sessions" broadcast below, which carries it.
   def handle_info({:status, status}, socket) do
-    handle_status_change(status, socket)
+    {:noreply, handle_status_change(socket, nil, status)}
   end
 
-  def handle_info({_session_id, {:status, status}}, socket) do
-    handle_status_change(status, socket)
+  def handle_info({session_id, {:status, status}}, socket) do
+    {:noreply, handle_status_change(socket, session_id, status)}
+  end
+
+  def handle_info(:reload_queue, socket) do
+    {:noreply, socket |> assign(:reload_timer, nil) |> reload_after_status_change()}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  def reload_for_node_filter(socket) do
-    {entries, node_map, aq_questions} =
-      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+  def reload_for_node_filter(socket), do: {:noreply, load_queue(socket)}
 
-    {:noreply,
-     socket
-     |> assign(:entries, entries)
-     |> assign(:node_map, node_map)
-     |> assign(:aq_questions, aq_questions)}
+  # Any status change makes that session's cached AskUserQuestion stale.
+  # Both idle and waiting sessions belong in the queue; reload on either.
+  defp handle_status_change(socket, session_id, status) do
+    socket =
+      if session_id, do: update(socket, :aq_cache, &Map.delete(&1, session_id)), else: socket
+
+    if status in [:idle, :waiting], do: schedule_reload(socket), else: socket
   end
 
-  # Both idle and waiting sessions belong in the queue; reload on either.
-  defp handle_status_change(status, socket) when status in [:idle, :waiting] do
-    {entries, node_map, aq_questions} =
-      load_entries_with_nodes(socket.assigns.node_filter, socket.assigns.queue_filter)
+  defp schedule_reload(%{assigns: %{reload_timer: nil}} = socket) do
+    assign(socket, :reload_timer, Process.send_after(self(), :reload_queue, @reload_debounce_ms))
+  end
+
+  defp schedule_reload(socket), do: socket
+
+  defp reload_after_status_change(socket) do
+    was_empty = Enum.empty?(socket.assigns.entries)
+    existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
+    socket = load_queue(socket)
+    entries = socket.assigns.entries
 
     # Subscribe to any new sessions we weren't tracking
-    existing_ids = MapSet.new(socket.assigns.entries, fn {s, _} -> s.id end)
-
     for {session, _msg} <- entries, session.id not in existing_ids do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
     end
 
-    was_empty = Enum.empty?(socket.assigns.entries)
-    now_has_entries = entries != []
-
-    socket =
+    if was_empty && entries != [] && socket.assigns.tts_autoplay do
+      push_autoplay_target(socket, hd(entries))
+    else
       socket
-      |> assign(:entries, entries)
-      |> assign(:node_map, node_map)
-      |> assign(:aq_questions, aq_questions)
-
-    socket =
-      if was_empty && now_has_entries && socket.assigns.tts_autoplay do
-        push_autoplay_target(socket, hd(entries))
-      else
-        socket
-      end
-
-    {:noreply, socket}
+    end
   end
-
-  defp handle_status_change(_status, socket), do: {:noreply, socket}
 
   # Explicit id from the server (the new entry's session id — see
   # extract_assistant_text/1's nil branch for why we skip messages with
@@ -437,42 +419,61 @@ defmodule OrcaHubWeb.QueueLive do
     assign(socket, undo_archive_timer: nil)
   end
 
-  defp load_entries_with_nodes(node_filter, queue_filter) do
+  # Loads the queue into :entries, :node_map and :aq_questions.
+  #
+  # The priority reset normalizes the queue front in the DB, so it runs on
+  # the connected mount and every later reload, never on the dead render: a
+  # plain GET must not write. It leaves the relative order of entries as it
+  # was, so the dead render shows the same queue.
+  defp load_queue(socket) do
+    if connected?(socket), do: HubRPC.reset_front_of_queue_priority()
+
     tagged =
       Cluster.list_idle_sessions_with_last_assistant_message()
-      |> NodeFilter.filter_tagged(node_filter)
+      |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
     # tagged is [{node, {session, msg}}, ...]
 
     # Apply queue filter
     tagged =
-      case queue_filter do
+      case socket.assigns.queue_filter do
         :orchestrator -> Enum.filter(tagged, fn {_n, {session, _msg}} -> session.orchestrator end)
         :all -> tagged
       end
 
     node_map = Map.new(tagged, fn {n, {session, _msg}} -> {session.id, n} end)
     entries = Enum.map(tagged, fn {_n, entry} -> entry end)
-    {entries, node_map, load_aq_questions(entries)}
+    aq_cache = load_aq_questions(entries, socket.assigns.aq_cache)
+
+    assign(socket,
+      entries: entries,
+      node_map: node_map,
+      aq_cache: aq_cache,
+      aq_questions:
+        for({id, questions} <- aq_cache, questions != nil, into: %{}, do: {id, questions})
+    )
   end
 
-  # For each waiting session, derive its pending AskUserQuestion from full
-  # history (the last assistant message in `entries` is the model's follow-up
-  # text, not the tool_use). Only waiting sessions are queried.
-  defp load_aq_questions(entries) do
-    entries
-    |> Enum.filter(fn {session, _msg} -> session.status == "waiting" end)
-    |> Enum.reduce(%{}, fn {session, _msg}, acc ->
-      messages =
-        session.id
-        |> HubRPC.list_messages()
-        |> Enum.map(& &1.data)
-
-      case AskUserQuestion.pending_questions(messages) do
-        %{questions: questions} -> Map.put(acc, session.id, questions)
-        nil -> acc
+  # Each waiting session's pending AskUserQuestion (the last assistant
+  # message in `entries` is the model's follow-up text, not the tool_use),
+  # as `%{session_id => normalized questions | nil}`. One targeted lookup per
+  # waiting session, reused from `cache` until that session's status changes
+  # (see handle_status_change/3). This used to load and scan every waiting
+  # session's full message history on every reload.
+  defp load_aq_questions(entries, cache) do
+    for {session, _msg} <- entries, session.status == "waiting", into: %{} do
+      case Map.fetch(cache, session.id) do
+        {:ok, questions} -> {session.id, questions}
+        :error -> {session.id, pending_questions(session.id)}
       end
-    end)
+    end
+  end
+
+  defp pending_questions(session_id) do
+    case HubRPC.pending_ask_user_question(session_id) do
+      %{questions: questions} -> AskUserQuestion.normalize_questions(questions)
+      nil -> nil
+    end
   end
 
   defp reject_session(entries, id) do

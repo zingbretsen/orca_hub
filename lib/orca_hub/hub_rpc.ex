@@ -128,6 +128,9 @@ defmodule OrcaHub.HubRPC do
   def list_idle_sessions_with_last_assistant_message,
     do: call(OrcaHub.Sessions, :list_idle_sessions_with_last_assistant_message, [])
 
+  def reset_front_of_queue_priority,
+    do: call(OrcaHub.Sessions, :reset_front_of_queue_priority, [])
+
   def last_assistant_text(session_id),
     do: call(OrcaHub.Sessions, :last_assistant_text, [session_id])
 
@@ -177,6 +180,12 @@ defmodule OrcaHub.HubRPC do
 
   def list_sessions_for_trigger(trigger_id),
     do: call(OrcaHub.Sessions, :list_sessions_for_trigger, [trigger_id])
+
+  def list_sessions_for_trigger_page(trigger_id, opts),
+    do: call(OrcaHub.Sessions, :list_sessions_for_trigger_page, [trigger_id, opts])
+
+  def count_sessions_for_trigger(trigger_id),
+    do: call(OrcaHub.Sessions, :count_sessions_for_trigger, [trigger_id])
 
   def list_task_invocations(session_id),
     do: call(OrcaHub.Sessions, :list_task_invocations, [session_id])
