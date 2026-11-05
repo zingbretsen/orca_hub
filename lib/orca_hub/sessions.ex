@@ -1247,6 +1247,15 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
+  One-off, batched purge of the write-only `thinking_tokens` rows. See
+  `OrcaHub.Sessions.ThinkingTokensPurge.run/1`. Hub only, via
+  `bin/orca_hub rpc`.
+  """
+  defdelegate purge_thinking_tokens_events(opts),
+    to: OrcaHub.Sessions.ThinkingTokensPurge,
+    as: :run
+
+  @doc """
   Persists a system event into `session_id`'s feed and broadcasts it — the
   same "write a message, broadcast it" shape `SessionRunner` itself uses
   for system-level events (a turn error, etc), but callable from OUTSIDE a
