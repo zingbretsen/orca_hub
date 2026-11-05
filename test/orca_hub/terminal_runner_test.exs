@@ -248,11 +248,11 @@ defmodule OrcaHub.TerminalRunnerTest do
     end
 
     test "PTY output alone keeps it running", %{terminal: terminal} do
-      {pid, _script_pid, bash_pid} = start_with!(terminal, idle_timeout_ms: 400)
+      {pid, _script_pid, bash_pid} = start_with!(terminal, idle_timeout_ms: 800)
       run_in_shell!(terminal, bash_pid, "while true; do echo tick; sleep 0.1; done")
       ref = Process.monitor(pid)
 
-      refute_receive {:DOWN, ^ref, _, _, _}, 1_200
+      refute_receive {:DOWN, ^ref, _, _, _}, 2_000
     end
 
     test "0 disables it", %{terminal: terminal} do
