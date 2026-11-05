@@ -57,6 +57,34 @@ defmodule OrcaHub.TerminalsTest do
     end
   end
 
+  describe "delete_terminal/1" do
+    test "deletes the row and tells a live runner on any node to stop" do
+      {:ok, terminal} = Terminals.create_terminal(%{name: "x", directory: "/tmp/x"})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, OrcaHub.TerminalRunner.control_topic(terminal.id))
+
+      assert {:ok, _} = Terminals.delete_terminal(terminal)
+
+      assert Terminals.get_terminal(terminal.id) == nil
+      terminal_id = terminal.id
+      assert_receive {:terminal_deleted, ^terminal_id}
+    end
+
+    test "deleting a row that is already gone is not an error" do
+      {:ok, terminal} = Terminals.create_terminal(%{name: "x", directory: "/tmp/x"})
+      {:ok, _} = Terminals.delete_terminal(terminal)
+
+      assert {:ok, _} = Terminals.delete_terminal(terminal)
+    end
+  end
+
+  describe "list_terminals_for_project/1" do
+    test "nil lists the terminals with no project instead of raising" do
+      {:ok, terminal} = Terminals.create_terminal(%{name: "no-project", directory: "/tmp/x"})
+
+      assert terminal.id in Enum.map(Terminals.list_terminals_for_project(nil), & &1.id)
+    end
+  end
+
   describe "pin_terminal/1 and unpin_terminal/1" do
     test "pins a terminal by setting pinned_at", %{project: project} do
       {:ok, terminal} = Terminals.create_terminal(%{name: "x", directory: "/tmp/x"})

@@ -96,9 +96,11 @@ defmodule OrcaHub.Terminals do
   Deletes the row, then tells a runner still alive for it (on whatever node)
   to stop and kill its shell — see `OrcaHub.TerminalRunner`'s teardown. The
   runner's periodic row check is the fallback if this broadcast is missed.
+  Deleting a row that is already gone (another tab got there first) is not
+  an error.
   """
   def delete_terminal(%Terminal{} = terminal) do
-    with {:ok, deleted} <- Repo.delete(terminal) do
+    with {:ok, deleted} <- Repo.delete(terminal, allow_stale: true) do
       Phoenix.PubSub.broadcast(
         OrcaHub.PubSub,
         OrcaHub.TerminalRunner.control_topic(deleted.id),

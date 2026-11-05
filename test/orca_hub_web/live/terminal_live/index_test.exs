@@ -141,6 +141,51 @@ defmodule OrcaHubWeb.TerminalLive.IndexTest do
     end
   end
 
+  describe "Delete" do
+    if System.find_executable("script") && match?({:unix, :linux}, :os.type()) do
+      test "stops a live runner even when the row's status is stale, then deletes the row",
+           %{conn: conn} do
+        dir = Path.join(System.tmp_dir!(), "del-term-#{System.unique_integer([:positive])}")
+        on_exit(fn -> File.rm_rf(dir) end)
+
+        {:ok, terminal} = Terminals.create_terminal(%{name: "Delete live", directory: dir})
+        {:ok, pid} = OrcaHub.TerminalSupervisor.start_terminal(terminal.id)
+        on_exit(fn -> OrcaHub.TerminalSupervisor.stop_terminal(terminal.id) end)
+        script_pid = :sys.get_state(pid).os_pid
+
+        # The flag the old code trusted: "not running", so no stop was sent.
+        {:ok, _} =
+          Terminals.update_terminal(Terminals.get_terminal!(terminal.id), %{status: "dead"})
+
+        {:ok, view, _html} = live(conn, ~p"/terminals")
+        render_click(view, "delete_terminal", %{"id" => terminal.id})
+
+        refute Process.alive?(pid)
+        refute OrcaHub.OSProcess.alive?(script_pid)
+        assert Terminals.get_terminal(terminal.id) == nil
+      end
+    end
+
+    test "is refused, with the reason, when the terminal's node is offline", %{conn: conn} do
+      suffix = System.unique_integer([:positive])
+
+      {:ok, terminal} =
+        Terminals.create_terminal(%{
+          name: "Delete offline #{suffix}",
+          directory: "/tmp/del-offline-#{suffix}",
+          status: "stopped",
+          runner_node: "orca@offline-#{suffix}"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/terminals")
+      html = render_click(view, "delete_terminal", %{"id" => terminal.id})
+
+      assert html =~ "Terminal not deleted."
+      assert html =~ "is not currently connected"
+      assert Terminals.get_terminal(terminal.id)
+    end
+  end
+
   describe "pinning" do
     test "pinning a terminal moves it into the Pinned section", %{conn: conn} do
       suffix = System.unique_integer([:positive])

@@ -96,19 +96,33 @@ defmodule OrcaHubWeb.TerminalLive.Index do
     end
   end
 
+  # Always stop first, on the row's own node, whatever its status says: the
+  # row can read "stopped"/"dead" while a runner is alive (a stale flag),
+  # and the stop is also what kills the shell's tree. A delete whose stop
+  # could not run (the node is offline) is refused, never done blind.
   def handle_event("delete_terminal", %{"id" => id}, socket) do
-    n = Map.get(socket.assigns.node_map, id, node())
-    terminal = Enum.find(socket.assigns.terminals, &(&1.id == id))
+    case find_terminal(socket, id) do
+      nil ->
+        {:noreply, reload_terminals(socket)}
 
-    if terminal do
-      if terminal.status == "running" do
-        Cluster.stop_terminal(n, id)
-      end
+      terminal ->
+        n = Map.get(socket.assigns.node_map, id, node())
 
-      Cluster.delete_terminal(n, terminal)
+        socket =
+          case Cluster.stop_terminal(n, id) do
+            {:error, reason} ->
+              put_flash(
+                socket,
+                :error,
+                "Terminal not deleted. " <> Cluster.terminal_stop_error_message(reason)
+              )
+
+            _stopped_or_not_running ->
+              delete_stopped_terminal(socket, n, terminal)
+          end
+
+        {:noreply, reload_terminals(socket)}
     end
-
-    {:noreply, reload_terminals(socket)}
   end
 
   def handle_event("pin", %{"id" => id}, socket) do
@@ -165,6 +179,20 @@ defmodule OrcaHubWeb.TerminalLive.Index do
   defp resolve_runner_node(rn), do: String.to_existing_atom(rn)
 
   defp find_terminal(socket, id), do: Enum.find(socket.assigns.terminals, &(&1.id == id))
+
+  defp delete_stopped_terminal(socket, n, terminal) do
+    case Cluster.delete_terminal(n, terminal) do
+      {:ok, _deleted} ->
+        socket
+
+      {:error, reason} ->
+        message =
+          Cluster.terminal_node_error_message(reason) ||
+            "Failed to delete the terminal: #{inspect(reason)}"
+
+        put_flash(socket, :error, message)
+    end
+  end
 
   defp reload_terminals(socket) do
     tagged_terminals =
