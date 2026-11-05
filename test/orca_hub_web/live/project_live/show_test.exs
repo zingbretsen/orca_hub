@@ -41,6 +41,68 @@ defmodule OrcaHubWeb.ProjectLive.ShowTest do
     assert html =~ "not currently connected"
   end
 
+  # The picker used to run two server_in_project? queries per server on every
+  # render while open; it now reads the already-loaded project server list.
+  test "the MCP server picker marks added servers without a query per server", %{
+    conn: conn,
+    project: project
+  } do
+    uniq = System.unique_integer([:positive])
+
+    # Inserted directly: create_upstream_server/1 also pokes the global
+    # UpstreamClient, which has no sandbox access.
+    server = fn name ->
+      %OrcaHub.UpstreamServers.UpstreamServer{}
+      |> OrcaHub.UpstreamServers.UpstreamServer.changeset(%{
+        name: "picker-#{name}-#{uniq}",
+        url: "https://#{name}-#{uniq}.example.com/mcp"
+      })
+      |> OrcaHub.Repo.insert!()
+    end
+
+    added = server.("added")
+    other = server.("other")
+
+    OrcaHub.UpstreamServers.add_server_to_project(project.id, added.id)
+
+    {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+    count_view_queries(view)
+
+    html = view |> element("button", "Add Server") |> render_click()
+
+    assert html =~ ~r/picker-added-#{uniq}.*?already added/s
+    assert has_element?(view, "button[phx-click='add_mcp_server'][phx-value-id='#{other.id}']")
+    refute has_element?(view, "button[phx-click='add_mcp_server'][phx-value-id='#{added.id}']")
+    assert drain_lv_queries() == 0
+  end
+
+  # Counts the queries the LiveView process itself runs (async: true, so
+  # other tests' queries run in other processes and are ignored).
+  defp count_view_queries(view) do
+    test_pid = self()
+    lv_pid = view.pid
+    handler_id = "project-show-queries-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:orca_hub, :repo, :query],
+      fn _event, _measurements, _metadata, _config ->
+        if self() == lv_pid, do: send(test_pid, :lv_query)
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
+
+  defp drain_lv_queries(count \\ 0) do
+    receive do
+      :lv_query -> drain_lv_queries(count + 1)
+    after
+      0 -> count
+    end
+  end
+
   describe "sessions table" do
     defp project_session(project, title, attrs \\ %{}) do
       {:ok, session} =
@@ -49,33 +111,6 @@ defmodule OrcaHubWeb.ProjectLive.ShowTest do
         )
 
       session
-    end
-
-    # Counts the queries the LiveView process itself runs (async: true, so
-    # other tests' queries run in other processes and are ignored).
-    defp count_view_queries(view) do
-      test_pid = self()
-      lv_pid = view.pid
-      handler_id = "project-show-queries-#{System.unique_integer([:positive])}"
-
-      :telemetry.attach(
-        handler_id,
-        [:orca_hub, :repo, :query],
-        fn _event, _measurements, _metadata, _config ->
-          if self() == lv_pid, do: send(test_pid, :lv_query)
-        end,
-        nil
-      )
-
-      on_exit(fn -> :telemetry.detach(handler_id) end)
-    end
-
-    defp drain_lv_queries(count \\ 0) do
-      receive do
-        :lv_query -> drain_lv_queries(count + 1)
-      after
-        0 -> count
-      end
     end
 
     test "lists live sessions, and archived ones only while the toggle is on", %{

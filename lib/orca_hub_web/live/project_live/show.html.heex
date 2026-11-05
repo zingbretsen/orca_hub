@@ -401,6 +401,7 @@
       No MCP servers defined yet. <.link navigate={~p"/settings"} class="link">Configure servers in Settings</.link>.
     </div>
     <div :if={@all_upstream_servers != []} class="space-y-2">
+      <% added_ids = MapSet.new(@project_mcp_servers, & &1.id) %>
       <div
         :for={server <- @all_upstream_servers}
         class="flex items-center justify-between text-sm bg-base-100 rounded px-3 py-2"
@@ -416,14 +417,11 @@
           <div class="text-base-content/50 text-xs font-mono">{server.url}</div>
         </div>
         <div>
-          <span
-            :if={HubRPC.server_in_project?(@project.id, server.id)}
-            class="text-xs text-base-content/40"
-          >
+          <span :if={server.id in added_ids} class="text-xs text-base-content/40">
             already added
           </span>
           <button
-            :if={!HubRPC.server_in_project?(@project.id, server.id)}
+            :if={server.id not in added_ids}
             phx-click="add_mcp_server"
             phx-value-id={server.id}
             class="btn btn-xs btn-primary"
