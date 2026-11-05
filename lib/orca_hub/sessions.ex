@@ -1533,8 +1533,6 @@ defmodule OrcaHub.Sessions do
   end
 
   def list_idle_sessions_with_last_assistant_message do
-    reset_front_of_queue_priority()
-
     # LATERAL join instead of a DISTINCT ON subquery over the whole `messages`
     # table (was a full sequential scan + disk-spilled sort of 300K+ rows to
     # answer a question about ~50 idle sessions — see perf_audit_projects_queue.md
@@ -1859,7 +1857,13 @@ defmodule OrcaHub.Sessions do
     ErlangError -> nil
   end
 
-  defp reset_front_of_queue_priority do
+  @doc """
+  Normalizes the queue front: if every idle session is deferred (min
+  priority > 0), resets the lowest-priority idle sessions to 0. Called by
+  QueueLive on its connected paths only (never on the dead render), via
+  `HubRPC.reset_front_of_queue_priority/0`.
+  """
+  def reset_front_of_queue_priority do
     min_priority_query =
       from s in Session,
         where: is_nil(s.archived_at) and s.status == "idle",
