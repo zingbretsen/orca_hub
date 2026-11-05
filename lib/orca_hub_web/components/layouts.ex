@@ -98,7 +98,7 @@ defmodule OrcaHubWeb.Layouts do
         <nav class="hidden md:flex items-center gap-1 ml-4 mr-auto">
           <.link :for={link <- @nav_links} navigate={link.href} class="btn btn-ghost btn-sm">
             {link.label}
-            <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" />
+            <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-desktop" role="primary" />
           </.link>
           <.settings_nav_dropdown links={@settings_menu_links} />
         </nav>
@@ -132,7 +132,12 @@ defmodule OrcaHubWeb.Layouts do
               <li :for={link <- @nav_links}>
                 <.link navigate={link.href} onclick={dropdown_close_js()}>
                   {link.label}
-                  <.idle_badge :if={link[:badge]} socket={@socket} id="idle-badge-mobile" />
+                  <.idle_badge
+                    :if={link[:badge]}
+                    socket={@socket}
+                    id="idle-badge-mobile"
+                    role="mirror"
+                  />
                 </.link>
               </li>
               <li :for={link <- @settings_menu_links}>
@@ -207,9 +212,15 @@ defmodule OrcaHubWeb.Layouts do
     """
   end
 
+  # Two spots, one counter: the "primary" (desktop) instance subscribes and
+  # counts, the "mirror" (mobile) one is fed by it. See OrcaHubWeb.IdleBadgeLive.
   defp idle_badge(assigns) do
     ~H"""
-    {live_render(@socket, OrcaHubWeb.IdleBadgeLive, id: @id, sticky: true)}
+    {live_render(@socket, OrcaHubWeb.IdleBadgeLive,
+      id: @id,
+      sticky: true,
+      session: %{"role" => @role}
+    )}
     """
   end
 
