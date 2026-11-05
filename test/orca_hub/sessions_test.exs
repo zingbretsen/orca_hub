@@ -1062,6 +1062,49 @@ defmodule OrcaHub.SessionsTest do
 
       assert Sessions.list_sessions_for_trigger(trigger.id) == []
     end
+
+    test "list_sessions_for_trigger_page/2 pages newest first and counts the total", %{
+      project: project
+    } do
+      {:ok, trigger} =
+        OrcaHub.Triggers.create_trigger(%{
+          name: "Paged trigger",
+          prompt: "hi",
+          type: "webhook",
+          project_id: project.id
+        })
+
+      ids =
+        for day <- 1..5 do
+          s = create_session(project, %{title: "Day #{day}", trigger_id: trigger.id})
+
+          from(x in Session, where: x.id == ^s.id)
+          |> Repo.update_all(set: [inserted_at: NaiveDateTime.new!(2026, 1, day, 0, 0, 0)])
+
+          s.id
+        end
+
+      {:ok, _} = Sessions.archive_session(Sessions.get_session!(hd(ids)))
+      _other = create_session(project, %{title: "Other"})
+
+      newest_first = Enum.reverse(ids)
+      assert Sessions.count_sessions_for_trigger(trigger.id) == 5
+
+      first = Sessions.list_sessions_for_trigger_page(trigger.id, limit: 2)
+      assert Enum.map(first.sessions, & &1.id) == Enum.take(newest_first, 2)
+      assert first.has_more
+
+      second =
+        Sessions.list_sessions_for_trigger_page(trigger.id, limit: 2, before: first.cursor)
+
+      assert Enum.map(second.sessions, & &1.id) == Enum.slice(newest_first, 2, 2)
+      assert second.has_more
+
+      last = Sessions.list_sessions_for_trigger_page(trigger.id, limit: 2, before: second.cursor)
+      assert [%{id: oldest, archived_at: %DateTime{}}] = last.sessions
+      assert oldest == hd(ids)
+      refute last.has_more
+    end
   end
 
   describe "list_task_invocations/1" do

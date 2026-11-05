@@ -4,6 +4,15 @@ defmodule OrcaHubWeb.TriggerLive.Show do
   alias OrcaHub.{Cluster, HubRPC}
   alias OrcaHubWeb.TriggerLive.Index
 
+  # Sessions listed per page. A trigger that fires every few minutes spawns
+  # thousands of sessions over its life; listing them all made this page
+  # ~1 MB of HTML and ~130 ms at 1,025 sessions. "Show older" pages back
+  # through the rest.
+  @sessions_page_size 50
+
+  @doc false
+  def sessions_page_size, do: @sessions_page_size
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     trigger = HubRPC.get_trigger!(id)
@@ -14,9 +23,18 @@ defmodule OrcaHubWeb.TriggerLive.Show do
      |> assign(
        page_title: trigger.name,
        trigger: trigger,
-       runner_node: runner_node
+       runner_node: runner_node,
+       sessions: [],
+       sessions_cursor: nil,
+       sessions_has_more: false,
+       sessions_total: HubRPC.count_sessions_for_trigger(trigger.id)
      )
-     |> load_sessions()}
+     |> load_sessions_page()}
+  end
+
+  @impl true
+  def handle_event("load_older_sessions", _params, socket) do
+    {:noreply, load_sessions_page(socket)}
   end
 
   @impl true
@@ -56,9 +74,20 @@ defmodule OrcaHubWeb.TriggerLive.Show do
      |> put_flash(:info, "Session rotated — the next firing will start a fresh session.")}
   end
 
-  defp load_sessions(socket) do
-    sessions = HubRPC.list_sessions_for_trigger(socket.assigns.trigger.id)
-    assign(socket, sessions: sessions)
+  # Appends the next page (newest first) to @sessions. LiveView change-tracks
+  # the table's comprehension per entry, so a click sends only the new rows.
+  defp load_sessions_page(socket) do
+    page =
+      HubRPC.list_sessions_for_trigger_page(socket.assigns.trigger.id,
+        limit: @sessions_page_size,
+        before: socket.assigns.sessions_cursor
+      )
+
+    assign(socket,
+      sessions: socket.assigns.sessions ++ page.sessions,
+      sessions_cursor: page.cursor || socket.assigns.sessions_cursor,
+      sessions_has_more: page.has_more
+    )
   end
 
   def webhook_url(trigger), do: OrcaHubWeb.TriggerLive.Index.webhook_url(trigger)

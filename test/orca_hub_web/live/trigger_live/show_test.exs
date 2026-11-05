@@ -2,6 +2,7 @@ defmodule OrcaHubWeb.TriggerLive.ShowTest do
   use OrcaHubWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
 
   alias OrcaHub.{Projects, Sessions, Triggers}
 
@@ -89,6 +90,108 @@ defmodule OrcaHubWeb.TriggerLive.ShowTest do
 
     # The old session must stay listed and reachable, just no longer flagged current.
     assert has_element?(view, "#trigger-sessions", "Reused one")
+    refute has_element?(view, "#trigger-sessions .badge-primary", "current")
+  end
+
+  describe "session list paging" do
+    # insert_all: 1,025 rows through create_session/1 would dominate the run.
+    defp seed_trigger_sessions(project, trigger, count) do
+      base = ~N[2026-01-01 00:00:00]
+
+      rows =
+        for i <- 1..count do
+          at = NaiveDateTime.add(base, i * 60, :second)
+
+          %{
+            id: Ecto.UUID.generate(),
+            directory: project.directory,
+            project_id: project.id,
+            trigger_id: trigger.id,
+            triggered: true,
+            title: run_title(i),
+            status: "idle",
+            inserted_at: at,
+            updated_at: at
+          }
+        end
+
+      {^count, _} = OrcaHub.Repo.insert_all(OrcaHub.Sessions.Session, rows)
+      rows
+    end
+
+    defp run_title(i), do: "Run #{String.pad_leading(Integer.to_string(i), 4, "0")}"
+
+    defp row_titles(view) do
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#trigger-sessions tr a")
+      |> Enum.map(&String.trim(LazyHTML.text(&1)))
+    end
+
+    test "the first render lists only the newest page, with the total", %{
+      conn: conn,
+      project: project,
+      trigger: trigger
+    } do
+      seed_trigger_sessions(project, trigger, 1_025)
+      page = OrcaHubWeb.TriggerLive.Show.sessions_page_size()
+
+      {:ok, view, html} = live(conn, ~p"/triggers/#{trigger.id}")
+
+      titles = row_titles(view)
+      assert length(titles) == page
+      assert hd(titles) == run_title(1_025)
+      assert List.last(titles) == run_title(1_025 - page + 1)
+      assert html =~ ~r/id="trigger-sessions-count"[^>]*>\s*1025\s*</
+      assert html =~ "Showing #{page} of 1025"
+      assert has_element?(view, "#load-older-sessions")
+      # The capped dead render, vs ~986 KB for 1,025 rows before.
+      assert byte_size(html) < 200_000
+    end
+
+    test "Show older appends the next page until none are left", %{
+      conn: conn,
+      project: project,
+      trigger: trigger
+    } do
+      page = OrcaHubWeb.TriggerLive.Show.sessions_page_size()
+      total = page * 2 + 7
+      seed_trigger_sessions(project, trigger, total)
+
+      {:ok, view, _html} = live(conn, ~p"/triggers/#{trigger.id}")
+
+      view |> element("#load-older-sessions") |> render_click()
+      assert length(row_titles(view)) == page * 2
+
+      view |> element("#load-older-sessions") |> render_click()
+      titles = row_titles(view)
+
+      assert titles == Enum.map(total..1//-1, &run_title/1)
+      refute has_element?(view, "#load-older-sessions")
+    end
+
+    test "sessions sharing an inserted_at second are neither skipped nor repeated", %{
+      conn: conn,
+      project: project,
+      trigger: trigger
+    } do
+      page = OrcaHubWeb.TriggerLive.Show.sessions_page_size()
+      rows = seed_trigger_sessions(project, trigger, page + 10)
+
+      # Every row in the same second: only the id tiebreak orders them.
+      OrcaHub.Repo.update_all(
+        from(s in OrcaHub.Sessions.Session, where: s.trigger_id == ^trigger.id),
+        set: [inserted_at: ~N[2026-02-01 00:00:00]]
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/triggers/#{trigger.id}")
+      view |> element("#load-older-sessions") |> render_click()
+
+      titles = row_titles(view)
+      assert length(titles) == page + 10
+      assert Enum.sort(titles) == Enum.sort(Enum.map(rows, & &1.title))
+    end
   end
 
   test "hides rotate when reuse_session is false", %{

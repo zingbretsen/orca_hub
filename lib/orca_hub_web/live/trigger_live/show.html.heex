@@ -152,7 +152,12 @@
 
 <div class="mt-6">
   <div class="flex items-center justify-between mb-2">
-    <h3 class="text-lg font-semibold">Sessions</h3>
+    <h3 class="text-lg font-semibold">
+      Sessions
+      <span :if={@sessions_total > 0} id="trigger-sessions-count" class="badge badge-ghost ml-1">
+        {@sessions_total}
+      </span>
+    </h3>
     <div class="flex items-center gap-2">
       <span :if={rotate_disabled_reason(@trigger)} class="text-xs text-base-content/50">
         {rotate_disabled_reason(@trigger)}
@@ -207,4 +212,18 @@
       {Calendar.strftime(session.inserted_at, "%b %d, %H:%M")}
     </:col>
   </.table>
+
+  <div :if={@sessions_has_more} class="flex items-center justify-center gap-3 mt-3">
+    <span class="text-xs text-base-content/50">
+      Showing {length(@sessions)} of {@sessions_total}
+    </span>
+    <button
+      id="load-older-sessions"
+      phx-click="load_older_sessions"
+      phx-disable-with="Loading..."
+      class="btn btn-sm btn-ghost"
+    >
+      Show older
+    </button>
+  </div>
 </div>

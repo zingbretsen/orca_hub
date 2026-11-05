@@ -149,6 +149,62 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
+  One page of `list_sessions_for_trigger/1`, newest first, archived
+  included — backs `/triggers/:id`, which used to list every session a
+  trigger ever spawned (~1 MB of HTML at 1,025 sessions).
+
+  Keyset-paginated on `(inserted_at, id)`, both descending in SQL:
+  `inserted_at` here is second-precision, so sessions spawned in the same
+  second tie and only `id` orders them. `opts`:
+
+    - `:limit` (required) — rows per page.
+    - `:before` — the `%{inserted_at:, id:}` cursor a previous page
+      returned; `nil` or absent for the newest page.
+
+  Returns `%{sessions:, has_more:, cursor:}`; `cursor` is the oldest row's
+  `%{inserted_at:, id:}` (`nil` for an empty page). Each session carries
+  only the fields the page renders (`id`, `title`, `status`,
+  `archived_at`, `inserted_at`), which keeps the HubRPC payload small.
+  """
+  def list_sessions_for_trigger_page(trigger_id, opts) do
+    limit = Keyword.fetch!(opts, :limit)
+
+    page =
+      from(s in Session,
+        where: s.trigger_id == ^trigger_id,
+        order_by: [desc: s.inserted_at, desc: s.id],
+        # One extra row tells us whether an older page exists.
+        limit: ^(limit + 1),
+        select: struct(s, [:id, :title, :status, :archived_at, :inserted_at])
+      )
+      |> before_session_cursor(Keyword.get(opts, :before))
+      |> Repo.all()
+
+    {sessions, has_more} =
+      if length(page) > limit, do: {Enum.take(page, limit), true}, else: {page, false}
+
+    cursor =
+      case List.last(sessions) do
+        nil -> nil
+        oldest -> %{inserted_at: oldest.inserted_at, id: oldest.id}
+      end
+
+    %{sessions: sessions, has_more: has_more, cursor: cursor}
+  end
+
+  defp before_session_cursor(query, nil), do: query
+
+  defp before_session_cursor(query, %{inserted_at: at, id: id}) do
+    from(s in query, where: s.inserted_at < ^at or (s.inserted_at == ^at and s.id < ^id))
+  end
+
+  @doc "How many sessions `trigger_id` has spawned, archived included."
+  def count_sessions_for_trigger(trigger_id) do
+    from(s in Session, where: s.trigger_id == ^trigger_id)
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
   Archives `session`. `opts[:extract_memories]` (default `true`) dispatches
   `OrcaHub.MemoryExtraction` for the session BEFORE the archive write lands —
   a fire-and-forget spawn (see `OrcaHub.MemoryExtraction.dispatch/2`'s own
