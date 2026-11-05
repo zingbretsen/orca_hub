@@ -121,11 +121,13 @@ defmodule OrcaHub.MixProject do
         "compile",
         "tailwind orca_hub",
         "esbuild orca_hub",
+        "esbuild orca_hub_lazy",
         "esbuild orca_hub_voice"
       ],
       "assets.deploy": [
         "tailwind orca_hub --minify",
         "esbuild orca_hub --minify",
+        "esbuild orca_hub_lazy --minify",
         "esbuild orca_hub_voice --minify",
         "phx.digest"
       ],

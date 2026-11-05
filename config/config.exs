@@ -89,6 +89,26 @@ config :esbuild,
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ],
+  # Page-specific bundles that app.js loads on demand ->
+  # priv/static/assets/js/lazy/. Kept out of app.js, which every page loads:
+  #   terminal.js + terminal.css   xterm and its stylesheet, for the Terminal
+  #                                hook (about half of app.js before the split)
+  #
+  # ESM with --splitting, so code that two entries share becomes a chunk.
+  # app.js stays a classic script; it import()s these entries by the URLs that
+  # root.html.heex puts in its `orca-lazy:*` meta tags (digested in prod). The
+  # chunks are reached by relative import from the entry, so they are
+  # content-hashed here instead of by phx.digest.
+  orca_hub_lazy: [
+    args: ~w(
+      js/lazy/terminal.js
+      --bundle --target=es2022 --format=esm --splitting
+      --outdir=../priv/static/assets/js/lazy
+      --chunk-names=chunks/[name]-[hash]
+    ),
+    cd: Path.expand("../assets", __DIR__),
+    env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
+  ],
   # Voice mode's non-bundleable assets -> priv/static/assets/voice/.
   #
   # Four entry points, two of which are plain copies:

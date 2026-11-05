@@ -8,7 +8,11 @@
       {assigns[:page_title]}
     </.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
-    <link phx-track-static rel="stylesheet" href={~p"/assets/vendor/xterm.css"} />
+    <%!-- The bundles app.js loads on demand (the `orca_hub_lazy` esbuild
+      profile; assets/js/lazy_assets.js reads these). ~p gives the digested
+      path in prod. Nothing is fetched until a page needs it. --%>
+    <meta name="orca-lazy:terminal-js" content={~p"/assets/js/lazy/terminal.js"} />
+    <meta name="orca-lazy:terminal-css" content={~p"/assets/js/lazy/terminal.css"} />
     <style>
       pre:has(> code.mermaid), pre:has(> code.language-mermaid) { visibility: hidden; height: 0; overflow: hidden; }
     </style>

@@ -1,6 +1,15 @@
-import { Terminal } from "@xterm/xterm"
-import { FitAddon } from "@xterm/addon-fit"
 import { Socket } from "phoenix"
+import { lazyLoader } from "./lazy_assets"
+
+// xterm and its stylesheet live in the lazily loaded terminal bundle
+// (assets/js/lazy/terminal.js), not in app.js. Both are fetched in parallel on
+// the first mount on a page and cached for the rest of it. The stylesheet is
+// awaited too, because xterm measures its cells when it opens.
+export function loadTerminalBundle(loader = lazyLoader()) {
+  return Promise.all([loader.loadModule("terminal-js"), loader.loadStylesheet("terminal-css")]).then(
+    ([bundle]) => bundle
+  )
+}
 
 export const TerminalHook = {
   mounted() {
@@ -10,6 +19,24 @@ export const TerminalHook = {
     // Clean up any previous connection (guards against double-mount)
     this._cleanup()
 
+    // The hook can be destroyed (or remounted) while the bundle loads. Only
+    // the mount that still owns this token may open the terminal.
+    const mountToken = {}
+    this._mountToken = mountToken
+    loadTerminalBundle().then(
+      ({ Terminal, FitAddon }) => {
+        if (this._mountToken === mountToken) this._open(terminalId, Terminal, FitAddon)
+      },
+      (err) => {
+        console.error("terminal bundle failed to load", err)
+        if (this._mountToken === mountToken) {
+          this.el.textContent = "[Terminal failed to load. Reload the page to try again.]"
+        }
+      }
+    )
+  },
+
+  _open(terminalId, Terminal, FitAddon) {
     // Create xterm.js instance
     this.term = new Terminal({
       cursorBlink: true,
@@ -149,6 +176,7 @@ export const TerminalHook = {
   },
 
   _cleanup() {
+    this._mountToken = null
     if (this.channel) {
       this.channel.leave()
       this.channel = null
