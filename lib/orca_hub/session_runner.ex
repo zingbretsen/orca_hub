@@ -3031,29 +3031,22 @@ defmodule OrcaHub.SessionRunner do
     data
   end
 
-  # Any other "system" event: capture the backend session id (via the backend
-  # callback rather than a hardcoded "session_id" key — see spec §5) when
-  # present, then persist/broadcast like any other event. A "system" event
-  # with no extractable session id falls through to the same persist/broadcast
-  # shape as the catch-all clause below.
+  # A running turn emits a `thinking_tokens` progress tick about once a
+  # second. Broadcast-only, like "queue_update" above: a live consumer still
+  # sees the tick, but it is not persisted and not appended to `messages`.
+  # Persisted, ticks were 41% of all new message rows (2026-10-22 prod
+  # audit), and nothing read them back (the feed hides them —
+  # MessageComponents.hidden_message?/1). Codex and pi never emit this subtype.
+  defp handle_stream_event(%{"type" => "system", "subtype" => "thinking_tokens"} = event, data) do
+    data = capture_backend_session_id(event, data)
+    broadcast(data.session_id, {:event, stamp(event)})
+    data
+  end
+
+  # Any other "system" event: capture the backend session id when present,
+  # then persist/broadcast like any other event.
   defp handle_stream_event(%{"type" => "system"} = event, data) do
-    case data.backend.session_id(event) do
-      sid when is_binary(sid) ->
-        if data.claude_session_id == nil do
-          update_session_status(data, %{claude_session_id: sid})
-        end
-
-        event = stamp(event)
-        persist_message(data, event)
-        broadcast(data.session_id, {:event, event})
-        %{data | claude_session_id: sid, messages: data.messages ++ [event]}
-
-      nil ->
-        event = stamp(event)
-        persist_message(data, event)
-        broadcast(data.session_id, {:event, event})
-        %{data | messages: data.messages ++ [event]}
-    end
+    persist_plain_event(event, capture_backend_session_id(event, data))
   end
 
   # Assistant turn — may contain an AskUserQuestion tool_use that puts the
@@ -3113,6 +3106,23 @@ defmodule OrcaHub.SessionRunner do
     persist_message(data, event)
     broadcast(data.session_id, {:event, event})
     %{data | messages: data.messages ++ [event]}
+  end
+
+  # Reads the backend session id through the backend callback, not a
+  # hardcoded "session_id" key (see spec §5). The DB column is written once,
+  # the first time an id appears.
+  defp capture_backend_session_id(event, data) do
+    case data.backend.session_id(event) do
+      sid when is_binary(sid) ->
+        if data.claude_session_id == nil do
+          update_session_status(data, %{claude_session_id: sid})
+        end
+
+        %{data | claude_session_id: sid}
+
+      nil ->
+        data
+    end
   end
 
   defp open_ui_requests(data), do: Map.get(data, :open_ui_requests, MapSet.new())

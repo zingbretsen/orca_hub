@@ -630,4 +630,60 @@ defmodule OrcaHub.SessionRunnerTest do
       assert data.messages == []
     end
   end
+
+  describe "handle_stream_event/2 — system events" do
+    # Same real path as the delta tests above: raw NDJSON -> StreamParser ->
+    # Backend.Claude.normalize/2 -> handle_stream_event/2.
+    setup %{project: project} do
+      session = create_session(project, %{})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+      %{session: session, data: delta_runner_data(session)}
+    end
+
+    defp thinking_tokens_tick(estimated) do
+      %{
+        "type" => "system",
+        "subtype" => "thinking_tokens",
+        "estimated_tokens" => estimated,
+        "estimated_tokens_delta" => 40,
+        "uuid" => "tick-#{estimated}",
+        "session_id" => "cli-sess-1"
+      }
+    end
+
+    test "a thinking_tokens tick is broadcast but not persisted or kept in messages", %{
+      session: session,
+      data: data
+    } do
+      data = feed(data, [thinking_tokens_tick(40), thinking_tokens_tick(80)])
+
+      assert_receive {:event, %{"subtype" => "thinking_tokens", "estimated_tokens" => 40}}
+      assert_receive {:event, %{"subtype" => "thinking_tokens", "estimated_tokens" => 80}}
+
+      assert Sessions.list_messages(session.id) == []
+      assert data.messages == []
+
+      # The backend session id is still captured from the tick.
+      assert data.claude_session_id == "cli-sess-1"
+      assert Sessions.get_session!(session.id).claude_session_id == "cli-sess-1"
+    end
+
+    test "an ordinary system event is still persisted, broadcast and kept in messages", %{
+      session: session,
+      data: data
+    } do
+      init = %{"type" => "system", "subtype" => "init", "session_id" => "cli-sess-1"}
+      data = feed(data, [init, thinking_tokens_tick(40)])
+
+      assert_receive {:event, %{"subtype" => "init"}}
+      assert_receive {:event, %{"subtype" => "thinking_tokens"}}
+
+      assert [%{data: %{"type" => "system", "subtype" => "init"}}] =
+               Sessions.list_messages(session.id)
+
+      assert [%{"subtype" => "init"}] = data.messages
+      assert data.claude_session_id == "cli-sess-1"
+      assert Sessions.get_session!(session.id).claude_session_id == "cli-sess-1"
+    end
+  end
 end
