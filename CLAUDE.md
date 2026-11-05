@@ -474,6 +474,16 @@ fixes, not CVE coverage — and its real risk profile was a long list of NEW
 strictness rejections. Read a minor's changelog for what it ADDS beyond the
 patch you are on, rather than assuming the higher number is the safer one.
 
+**Some audit lines cannot be cleared by upgrading (2026-11-05).** After
+gun 2.7.0/cowlib 2.21.0 (the latest), `hex.audit` still flags both for
+CVE-2026-43966. cowlib's fix is on master only, and the GHSA record lists
+gun as "fixed in 2.16.0", a version that does not exist (the EEF record says
+gun >= 2.4.0 is protected). Read `api.osv.dev/v1/vulns/<id>` for a `fixed`
+event before you chase one. gun/cowlib reach only nostrum, so only the
+Discord agent. Smoke them with `:gun` and `Nostrum.Constants.gun_tls_opts()`:
+an HTTP/2 GET of `discord.com/api/v10/gateway` (200), and a ws_upgrade to
+`gateway.discord.gg` (op 10 Hello). Neither call needs a token.
+
 **Verifying the app actually boots.** The test suite uses `ConnTest`/
 `LiveViewTest`, which bypass the HTTP adapter entirely — so it does NOT cover
 bandit / thousand_island / websock_adapter / plug. After upgrading any of those,
