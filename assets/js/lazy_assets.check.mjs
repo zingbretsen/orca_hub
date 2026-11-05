@@ -270,5 +270,159 @@ const cssLink = () => globalThis.document.links()[0]
   ok("logs the failure", errors.some((e) => /terminal bundle failed to load/.test(e)))
 }
 
+console.log("TerminalHook channel wiring")
+{
+  // _open/6 against fakes for xterm, the fit addon, the observers and the
+  // channel, so the real wiring runs: input encoding, the hidden-copy gate,
+  // the resize debounce, exit/restart events.
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  let resizeCb = null
+  globalThis.ResizeObserver = class {
+    constructor(cb) {
+      resizeCb = cb
+    }
+    observe() {}
+    disconnect() {}
+  }
+  globalThis.MutationObserver = class {
+    observe() {}
+    disconnect() {}
+  }
+  class FakeTerm {
+    constructor() {
+      this.cols = 80
+      this.rows = 24
+      this.written = []
+    }
+    loadAddon() {}
+    open() {}
+    attachCustomKeyEventHandler() {}
+    focus() {}
+    write(data) {
+      this.written.push(data)
+    }
+    writeln(line) {
+      this.written.push(line)
+    }
+    onData(cb) {
+      this.typed = cb
+    }
+    dispose() {}
+  }
+  class FakeFit {
+    fit() {}
+  }
+  function fakeChannel() {
+    const receives = {}
+    return {
+      state: "joining",
+      handlers: {},
+      pushes: [],
+      join() {
+        const chain = {
+          receive(status, cb) {
+            receives[status] = cb
+            return chain
+          },
+        }
+        return chain
+      },
+      on(event, cb) {
+        this.handlers[event] = cb
+      },
+      push(event, payload) {
+        this.pushes.push([event, payload])
+      },
+      leave() {
+        this.left = true
+      },
+      replyOk(resp) {
+        this.state = "joined"
+        receives.ok(resp)
+      },
+      replyError(resp) {
+        receives.error(resp)
+      },
+    }
+  }
+  function openHook({ width = 800 } = {}) {
+    const channel = fakeChannel()
+    globalThis.window = globalThis
+    window.__terminalSocket = { channel: () => channel }
+    const hook = Object.create(TerminalHook)
+    hook.el = {
+      dataset: { terminalId: "t9" },
+      classList: { contains: () => false },
+      offsetWidth: width,
+      offsetHeight: width ? 600 : 0,
+    }
+    hook.events = []
+    hook.pushEvent = (event, payload) => hook.events.push([event, payload])
+    hook._open("t9", FakeTerm, FakeFit)
+    return { hook, channel }
+  }
+  const pushesOf = (channel, event) => channel.pushes.filter(([e]) => e === event).map(([, p]) => p)
+
+  {
+    const { hook, channel } = openHook()
+    channel.replyOk({ scrollback: "" })
+    await wait(200)
+    eq("reports its size to the pty once joined", pushesOf(channel, "resize"), [{ cols: 80, rows: 24 }])
+
+    for (const [cols, rows] of [
+      [90, 25],
+      [100, 30],
+      [101, 33],
+    ]) {
+      hook.term.cols = cols
+      hook.term.rows = rows
+      resizeCb()
+    }
+    await wait(200)
+    eq("a burst of resizes sends only the last size", pushesOf(channel, "resize").slice(1), [{ cols: 101, rows: 33 }])
+
+    resizeCb()
+    await wait(200)
+    eq("an unchanged size is not resent", pushesOf(channel, "resize").length, 2)
+
+    hook.term.typed("é€ ls")
+    eq("input goes over as UTF-8, base64-encoded", pushesOf(channel, "input"), [
+      { data: Buffer.from("é€ ls", "utf8").toString("base64") },
+    ])
+
+    channel.handlers.exit({ code: 0 })
+    eq("exit is pushed to the hosting LiveView", hook.events, [["terminal_exited", { terminal_id: "t9", code: 0 }]])
+    channel.handlers.status({ status: "running" })
+    ok("a restart after an exit is marked in the xterm", hook.term.written.includes("\r\n[Shell restarted]"))
+    await wait(200)
+    eq("a restart resends the size to the new runner", pushesOf(channel, "resize").length, 3)
+    hook.destroyed()
+  }
+
+  {
+    const { hook, channel } = openHook({ width: 0 })
+    channel.replyOk({ scrollback: "" })
+    await wait(200)
+    eq("a display:none copy never reports a size", pushesOf(channel, "resize"), [])
+    hook.term.typed("\x1b[?1;2c")
+    eq("a display:none copy's query replies are not sent", pushesOf(channel, "input"), [])
+    hook.destroyed()
+  }
+
+  {
+    const { hook, channel } = openHook()
+    channel.replyError({ reason: "not_found" })
+    ok("a deleted terminal's channel is left, ending the rejoin loop", channel.left === true)
+    let threw = null
+    try {
+      hook.term.typed("x")
+    } catch (err) {
+      threw = err
+    }
+    eq("typing after that does not throw", threw, null)
+    hook.destroyed()
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

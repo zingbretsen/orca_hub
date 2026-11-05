@@ -155,6 +155,79 @@ defmodule OrcaHub.TerminalRunnerTest do
     end
   end
 
+  # Collects PTY output until it matches `pattern`; returns the output.
+  defp await_output(pattern, timeout \\ 2_000, acc \\ "") do
+    receive do
+      {:terminal_output, data} ->
+        acc = acc <> data
+        if acc =~ pattern, do: acc, else: await_output(pattern, timeout, acc)
+    after
+      timeout -> flunk("never saw #{inspect(pattern)} in output: #{inspect(acc)}")
+    end
+  end
+
+  describe "resize" do
+    test "a fresh start opens the pty at the row's stored size, not 0x0", %{terminal: terminal} do
+      {:ok, terminal} = Terminals.update_terminal(terminal, %{cols: 132, rows: 43})
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal.id}")
+      start!(terminal)
+      await_output(~r/\$ /)
+      # The first output is what lets the size through; give it a beat.
+      Process.sleep(150)
+
+      TerminalRunner.write(terminal.id, "stty size\n")
+
+      assert await_output(~r/\r43 132\r\n/) =~ "43 132"
+    end
+
+    test "the last of a burst of resizes reaches the pty and the row", %{terminal: terminal} do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal.id}")
+      {pid, script_pid, _bash_pid} = start!(terminal)
+      await_output(~r/\$ /)
+
+      for {cols, rows} <- [{80, 24}, {90, 25}, {101, 33}],
+          do: TerminalRunner.resize(terminal.id, cols, rows)
+
+      eventually(fn -> :sys.get_state(pid).applied_size == {101, 33} end)
+      TerminalRunner.write(terminal.id, "stty size\n")
+
+      assert await_output(~r/\r33 101\r\n/) =~ "33 101"
+      assert TerminalRunner.pty_slave(script_pid) =~ ~r{^/dev/pts/\d+$}
+
+      row = Terminals.get_terminal(terminal.id)
+      assert {row.cols, row.rows} == {101, 33}
+    end
+
+    test "nonsense sizes are ignored", %{terminal: terminal} do
+      {pid, _script_pid, _bash_pid} = start!(terminal)
+
+      TerminalRunner.resize(terminal.id, 0, 40)
+      TerminalRunner.resize(terminal.id, 120, 100_000)
+
+      state = :sys.get_state(pid)
+      assert {state.cols, state.rows} == {120, 40}
+    end
+  end
+
+  describe "truncate_scrollback/2" do
+    test "starts the kept window after the first newline, not mid escape sequence" do
+      data = "old line\n\e[01;32mprompt\e[00m$ ls\nfile\n"
+      # Cut so the window opens inside "\e[01;32m".
+      kept = TerminalRunner.truncate_scrollback(data, byte_size(data) - 11)
+
+      assert kept == "file\n"
+    end
+
+    test "keeps the raw tail when no newline is near" do
+      data = String.duplicate("x", 10_000)
+      assert TerminalRunner.truncate_scrollback(data, 5_000) == String.duplicate("x", 5_000)
+    end
+
+    test "leaves data under the limit alone" do
+      assert TerminalRunner.truncate_scrollback("abc", 10) == "abc"
+    end
+  end
+
   describe "the shell exiting on its own" do
     test "exit marks the row dead and broadcasts exactly one terminal_exit, no stopped status",
          %{terminal: terminal} do

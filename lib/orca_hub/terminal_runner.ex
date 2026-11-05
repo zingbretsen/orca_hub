@@ -29,6 +29,14 @@ defmodule OrcaHub.TerminalRunner do
   Before this, teardown was a bare `Port.close/1`: a shell at an idle prompt
   exited on the stdin EOF, but one running a foreground job, and every
   `nohup`ed job, outlived the terminal.
+
+  ## Size
+
+  script(1)'s stdin is a pipe, so its pty starts at 0x0. Once the shell has
+  written its first output, and on every (debounced) resize from a client,
+  the runner sets the pty slave's size with `stty -F`, which makes the
+  kernel SIGWINCH the shell's foreground job. The row keeps the last size
+  for the next start.
   """
   use GenServer
   require Logger
@@ -36,6 +44,8 @@ defmodule OrcaHub.TerminalRunner do
   alias OrcaHub.{HubRPC, OSProcess, ProcessIsolation}
 
   @scrollback_size 64 * 1024
+  # How far into a truncated scrollback to look for a newline to start at.
+  @scrollback_resync_bytes 4096
 
   # How often a running terminal confirms its row still exists (the
   # fallback for a delete whose control broadcast it missed).
@@ -44,6 +54,9 @@ defmodule OrcaHub.TerminalRunner do
   # The reaper's grace after a stop: the shell gets SIGHUP from the pty
   # hangup and normally exits (saving its history) well inside this.
   @stop_reap_grace_ms 500
+
+  @resize_debounce_ms 100
+  @max_dimension 1_000
 
   # API
 
@@ -126,6 +139,15 @@ defmodule OrcaHub.TerminalRunner do
        shell: terminal.shell || "/bin/bash",
        cols: terminal.cols || 120,
        rows: terminal.rows || 40,
+       # The size last pushed to the pty (nil until the first push) and the
+       # one the row holds, so neither stty nor the DB sees a no-op resize.
+       applied_size: nil,
+       persisted_size: {terminal.cols, terminal.rows},
+       resize_timer: nil,
+       # The pty is resized only once the shell has written something: by
+       # then it has made the pts its controlling tty, so stty opening it
+       # can never claim it first.
+       shell_ready: false,
        scrollback: <<>>,
        row_check_ms: row_check_ms,
        # true once the row's final status is written and broadcast, so
@@ -142,14 +164,16 @@ defmodule OrcaHub.TerminalRunner do
 
   def handle_cast({:write, _data}, state), do: {:noreply, state}
 
-  def handle_cast({:resize, cols, rows}, state) do
-    # Update stored size — actual PTY resize requires ioctl which
-    # is non-trivial with the `script` wrapper. For now we store
-    # the size and it takes effect on next terminal restart.
-    terminal = HubRPC.get_terminal!(state.terminal_id)
-    HubRPC.update_terminal(terminal, %{cols: cols, rows: rows})
-    {:noreply, %{state | cols: cols, rows: rows}}
+  # xterm's fit addon reports a size on every layout change (a panel drag
+  # fires dozens), so resizes are debounced: only the last size inside
+  # @resize_debounce_ms reaches the pty and the row.
+  def handle_cast({:resize, cols, rows}, state)
+      when is_integer(cols) and cols in 1..@max_dimension and is_integer(rows) and
+             rows in 1..@max_dimension do
+    {:noreply, schedule_resize(%{state | cols: cols, rows: rows}, @resize_debounce_ms)}
   end
+
+  def handle_cast({:resize, _cols, _rows}, state), do: {:noreply, state}
 
   @impl true
   def handle_call(:get_scrollback, _from, state) do
@@ -161,8 +185,13 @@ defmodule OrcaHub.TerminalRunner do
     broadcast(state.terminal_id, {:terminal_output, data})
 
     scrollback = truncate_scrollback(state.scrollback <> data, @scrollback_size)
+    state = %{state | scrollback: scrollback}
 
-    {:noreply, %{state | scrollback: scrollback}}
+    if state.shell_ready do
+      {:noreply, state}
+    else
+      {:noreply, schedule_resize(%{state | shell_ready: true}, 0)}
+    end
   end
 
   def handle_info({port, {:exit_status, code}}, %{port: port} = state) do
@@ -179,6 +208,10 @@ defmodule OrcaHub.TerminalRunner do
   def handle_info({:terminal_deleted, terminal_id}, %{terminal_id: terminal_id} = state) do
     Logger.info("Terminal #{terminal_id} was deleted, stopping its runner")
     {:stop, {:shutdown, :deleted}, state}
+  end
+
+  def handle_info(:apply_size, state) do
+    {:noreply, apply_size(%{state | resize_timer: nil})}
   end
 
   def handle_info(:row_check, state) do
@@ -261,6 +294,100 @@ defmodule OrcaHub.TerminalRunner do
     e -> {:error, e}
   catch
     :exit, reason -> {:error, reason}
+  end
+
+  defp schedule_resize(%{resize_timer: nil} = state, delay_ms) do
+    %{state | resize_timer: Process.send_after(self(), :apply_size, delay_ms)}
+  end
+
+  defp schedule_resize(state, _delay_ms), do: state
+
+  # Pushes the wanted size to the pty slave with `stty -F <pts> rows R cols
+  # C`: the TIOCSWINSZ ioctl that makes the kernel send SIGWINCH to the
+  # shell's foreground process group, so the prompt and full-screen
+  # programs redraw at the new size. Without it the pty stayed at whatever
+  # script(1) gave it while xterm fitted itself to the panel: wrapped
+  # prompts and misaligned redraws. No-op on a system without /proc
+  # (macOS): the size is still stored for the next start.
+  defp apply_size(%{shell_ready: false} = state), do: state
+  defp apply_size(%{port: nil} = state), do: state
+
+  defp apply_size(state) do
+    size = {state.cols, state.rows}
+
+    state =
+      if size != state.applied_size and set_pty_size(state.os_pid, size) == :ok,
+        do: %{state | applied_size: size},
+        else: state
+
+    persist_size(state, size)
+  end
+
+  defp set_pty_size(os_pid, {cols, rows}) do
+    with pts when is_binary(pts) <- pty_slave(os_pid),
+         stty when is_binary(stty) <- System.find_executable("stty"),
+         {_out, 0} <-
+           System.cmd(stty, ["-F", pts, "rows", "#{rows}", "cols", "#{cols}"],
+             stderr_to_stdout: true
+           ) do
+      :ok
+    else
+      other ->
+        Logger.debug("Terminal pty resize skipped: #{inspect(other)}")
+        :error
+    end
+  end
+
+  # script(1) holds the pty slave open itself; a build that closes it
+  # leaves the shell's stdin as the way in.
+  @doc false
+  def pty_slave(os_pid) when is_integer(os_pid) do
+    find_pts("/proc/#{os_pid}/fd") ||
+      case File.read("/proc/#{os_pid}/task/#{os_pid}/children") do
+        {:ok, text} ->
+          text |> String.split() |> Enum.find_value(&find_pts("/proc/#{&1}/fd", ["0"]))
+
+        {:error, _} ->
+          nil
+      end
+  end
+
+  def pty_slave(_os_pid), do: nil
+
+  defp find_pts(fd_dir, fds \\ nil) do
+    case fds || ls(fd_dir) do
+      [] ->
+        nil
+
+      fds ->
+        Enum.find_value(fds, fn fd ->
+          case File.read_link(Path.join(fd_dir, fd)) do
+            {:ok, "/dev/pts/" <> _ = pts} -> pts
+            _ -> nil
+          end
+        end)
+    end
+  end
+
+  defp ls(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> entries
+      {:error, _} -> []
+    end
+  end
+
+  # The row keeps the last size so the next start opens at it.
+  defp persist_size(%{persisted_size: size} = state, size), do: state
+
+  defp persist_size(state, {cols, rows} = size) do
+    safe_hub(fn ->
+      case HubRPC.get_terminal(state.terminal_id) do
+        nil -> :ok
+        terminal -> HubRPC.update_terminal(terminal, %{cols: cols, rows: rows})
+      end
+    end)
+
+    %{state | persisted_size: size}
   end
 
   defp schedule_row_check(ms) when is_integer(ms) and ms > 0,
@@ -351,10 +478,21 @@ defmodule OrcaHub.TerminalRunner do
     :ok
   end
 
-  defp truncate_scrollback(data, max_size) when byte_size(data) > max_size do
-    skip = byte_size(data) - max_size
-    binary_part(data, skip, max_size)
+  # Keeps the last `max_size` bytes, starting at a line boundary when one is
+  # near: a cut inside an escape sequence or a UTF-8 character replays as
+  # junk at the top of an xterm that (re)attaches.
+  @doc false
+  def truncate_scrollback(data, max_size) when byte_size(data) > max_size do
+    tail = binary_part(data, byte_size(data) - max_size, max_size)
+
+    case :binary.match(tail, "\n") do
+      {pos, 1} when pos < @scrollback_resync_bytes ->
+        binary_part(tail, pos + 1, byte_size(tail) - pos - 1)
+
+      _ ->
+        tail
+    end
   end
 
-  defp truncate_scrollback(data, _max_size), do: data
+  def truncate_scrollback(data, _max_size), do: data
 end
