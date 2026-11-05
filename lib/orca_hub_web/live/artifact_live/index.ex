@@ -21,6 +21,8 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
 
   alias OrcaHub.HubRPC
 
+  @reload_coalesce_ms 150
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -87,8 +89,18 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
   end
 
   @impl true
+  # Coalesce bursts of broadcasts into one listing reload.
   def handle_info({:artifact_changed, _artifact_id}, socket) do
-    {:noreply, reload_artifacts(socket)}
+    if socket.assigns[:reload_pending] do
+      {:noreply, socket}
+    else
+      Process.send_after(self(), :reload_artifacts, @reload_coalesce_ms)
+      {:noreply, assign(socket, :reload_pending, true)}
+    end
+  end
+
+  def handle_info(:reload_artifacts, socket) do
+    {:noreply, socket |> assign(:reload_pending, false) |> reload_artifacts()}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -96,7 +108,12 @@ defmodule OrcaHubWeb.ArtifactLive.Index do
   defp find_artifact(socket, id), do: Enum.find(socket.assigns.artifacts, &(&1.id == id))
 
   defp reload_artifacts(socket) do
-    opts = %{name: socket.assigns.name_filter, project_id: socket.assigns.project_filter}
+    opts = %{
+      name: socket.assigns.name_filter,
+      project_id: socket.assigns.project_filter,
+      listing: true
+    }
+
     artifacts = HubRPC.list_all_artifacts(opts)
     {pinned, rest} = Enum.split_with(artifacts, & &1.pinned_at)
 

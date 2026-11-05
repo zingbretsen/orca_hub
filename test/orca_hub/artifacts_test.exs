@@ -598,4 +598,29 @@ defmodule OrcaHub.ArtifactsTest do
       assert_receive {:artifact_changed, ^artifact_id}
     end
   end
+
+  describe "list_all_artifacts/1 listing: true" do
+    test "skips content and data but keeps the columns the list view renders", %{project: project} do
+      {:ok, _} =
+        Artifacts.save_artifact(%{
+          project_id: project.id,
+          name: "heavy",
+          kind: "html",
+          content: String.duplicate("x", 10_000),
+          data: %{"k" => "v"}
+        })
+
+      [full] = Artifacts.list_all_artifacts(%{project_id: project.id})
+      assert byte_size(full.content) == 10_000
+
+      [slim] = Artifacts.list_all_artifacts(%{project_id: project.id, listing: true})
+      assert slim.content == nil
+      assert slim.data == %{}
+      assert slim.name == "heavy"
+      assert slim.kind == "html"
+      assert slim.version == 1
+      assert slim.project.id == project.id
+      assert slim.updated_at
+    end
+  end
 end

@@ -249,6 +249,8 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
     {:ok, _artifact} =
       Artifacts.save_artifact(%{project_id: project.id, name: name, content: "x"})
 
+    # reload is coalesced (150 ms)
+    Process.sleep(300)
     assert render(view) =~ name
   end
 
@@ -261,6 +263,7 @@ defmodule OrcaHubWeb.ArtifactLive.IndexTest do
 
     {:ok, _} = Artifacts.pin_artifact(artifact)
 
+    Process.sleep(300)
     assert render(view) =~ "Pinned"
   end
 

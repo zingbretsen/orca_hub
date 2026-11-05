@@ -191,17 +191,40 @@ defmodule OrcaHub.Artifacts do
 
     * `:name` - case-insensitive substring match against `name`
     * `:project_id` - scope to one project
+    * `:listing` - when true, skip the heavy `content` and `data` columns
+      (they load as nil / the schema default); for list views only
   """
   def list_all_artifacts(opts \\ %{}) do
     opts = Map.new(opts)
 
     Artifact
+    |> select_listing_opt(Map.get(opts, :listing))
     |> filter_by_name_opt(Map.get(opts, :name))
     |> filter_by_project_id_opt(Map.get(opts, :project_id))
     |> order_by([a], desc: a.updated_at)
     |> preload(:project)
     |> Repo.all()
   end
+
+  defp select_listing_opt(query, true) do
+    select(
+      query,
+      [a],
+      struct(a, [
+        :id,
+        :name,
+        :kind,
+        :version,
+        :pinned_at,
+        :project_id,
+        :session_id,
+        :inserted_at,
+        :updated_at
+      ])
+    )
+  end
+
+  defp select_listing_opt(query, _), do: query
 
   defp filter_by_name_opt(query, name) when name in [nil, ""], do: query
 
