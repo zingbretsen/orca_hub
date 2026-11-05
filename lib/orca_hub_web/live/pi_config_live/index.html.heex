@@ -169,10 +169,11 @@
   No pi config entries yet.
 </div>
 
+<% by_kind = entries_by_kind(@entries) %>
 <div :if={@entries != []} class="mt-6 space-y-6">
   <div
     :for={kind <- kinds_for_template()}
-    :if={!Enum.empty?(Map.get(entries_by_kind(@entries), kind, []))}
+    :if={!Enum.empty?(Map.get(by_kind, kind, []))}
     class="bg-base-200 rounded-lg overflow-hidden"
   >
     <div class="bg-base-300 px-4 py-2 font-semibold">
@@ -181,7 +182,7 @@
 
     <div class="divide-y divide-base-300">
       <div
-        :for={entry <- Map.get(entries_by_kind(@entries), kind, [])}
+        :for={entry <- Map.get(by_kind, kind, [])}
         class="flex items-center gap-3 px-4 py-3 text-sm hover:bg-base-300/50"
       >
         <div class="flex-1 min-w-0">
