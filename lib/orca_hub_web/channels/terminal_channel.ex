@@ -35,7 +35,7 @@ defmodule OrcaHubWeb.TerminalChannel do
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal_id}")
         runner_node = Cluster.runner_node_for(terminal)
 
-        {:ok, %{scrollback: Base.encode64(scrollback(runner_node, terminal_id))},
+        {:ok, %{scrollback: Base.encode64(attach(runner_node, terminal_id))},
          socket
          |> assign(:terminal_id, terminal_id)
          |> assign(:runner_node, runner_node)}
@@ -81,19 +81,25 @@ defmodule OrcaHubWeb.TerminalChannel do
   end
 
   def handle_info({:terminal_status, status}, socket) do
+    # A restarted runner starts with no clients; this channel stays joined
+    # across the restart, so it attaches to the new one.
+    if status == :running, do: attach(socket.assigns.runner_node, socket.assigns.terminal_id)
+
     push(socket, "status", %{status: to_string(status)})
     {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
-  # Empty when no runner is alive (or it stopped between the lookup and
-  # the call, or its node is unreachable).
-  defp scrollback(runner_node, terminal_id) do
+  # Registers this channel with the runner (which monitors it: a terminal
+  # with a viewer is never idle-stopped) and returns its scrollback. Empty
+  # when no runner is alive (or it stopped between the lookup and the call,
+  # or its node is unreachable).
+  defp attach(runner_node, terminal_id) do
     case guarded(fn ->
-           Cluster.rpc(runner_node, TerminalRunner, :get_scrollback, [terminal_id])
+           Cluster.rpc(runner_node, TerminalRunner, :attach, [terminal_id, self()])
          end) do
-      data when is_binary(data) -> data
+      {:ok, data} when is_binary(data) -> data
       _ -> <<>>
     end
   end

@@ -93,5 +93,78 @@ defmodule OrcaHubWeb.TerminalChannelTest do
       assert Process.alive?(socket1.channel_pid)
       assert Process.alive?(socket2.channel_pid)
     end
+
+    test "a deleted terminal is refused, not crashed on", %{terminal: terminal} do
+      {:ok, _} = Terminals.delete_terminal(terminal)
+
+      assert {:error, %{reason: "not_found"}} =
+               subscribe_and_join(
+                 socket(UserSocket, nil, %{}),
+                 TerminalChannel,
+                 "terminal:#{terminal.id}:client-a",
+                 %{}
+               )
+    end
+  end
+
+  describe "with a live runner" do
+    if System.find_executable("script") && match?({:unix, :linux}, :os.type()) do
+      setup %{terminal: terminal} do
+        {:ok, pid} = OrcaHub.TerminalSupervisor.start_terminal(terminal.id)
+        on_exit(fn -> OrcaHub.TerminalSupervisor.stop_terminal(terminal.id) end)
+        {:ok, runner: pid}
+      end
+
+      test "join attaches the channel to the runner; leaving detaches it", %{
+        terminal: terminal,
+        runner: runner
+      } do
+        {:ok, _reply, socket} =
+          subscribe_and_join(
+            socket(UserSocket, nil, %{}),
+            TerminalChannel,
+            "terminal:#{terminal.id}:client-a",
+            %{}
+          )
+
+        channel = socket.channel_pid
+        assert Map.has_key?(:sys.get_state(runner).clients, channel)
+
+        Process.unlink(channel)
+        ref = Process.monitor(channel)
+        close(socket)
+        assert_receive {:DOWN, ^ref, _, _, _}
+
+        assert eventually(fn -> not Map.has_key?(:sys.get_state(runner).clients, channel) end)
+      end
+
+      test "input to a runner that has stopped does not take the channel down", %{
+        terminal: terminal
+      } do
+        {:ok, _reply, socket} =
+          subscribe_and_join(
+            socket(UserSocket, nil, %{}),
+            TerminalChannel,
+            "terminal:#{terminal.id}:client-a",
+            %{}
+          )
+
+        :ok = OrcaHub.TerminalSupervisor.stop_terminal(terminal.id)
+        push(socket, "input", %{"data" => Base.encode64("ls\n")})
+        push(socket, "resize", %{"cols" => 100, "rows" => 30})
+        ref = push(socket, "ping-unknown", %{})
+
+        refute_reply ref, _
+        assert Process.alive?(socket.channel_pid)
+      end
+    end
+  end
+
+  defp eventually(fun, attempts \\ 50) do
+    cond do
+      fun.() -> true
+      attempts > 0 -> Process.sleep(20) && eventually(fun, attempts - 1)
+      true -> false
+    end
   end
 end

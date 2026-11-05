@@ -57,6 +57,13 @@ if config_env() != :test do
          System.get_env("ORCA_AUTO_RESUME") not in ~w(0 false)
 end
 
+# Web terminal idle teardown (OrcaHub.TerminalRunner): a running terminal is
+# stopped, and its shell's process tree killed, after this many minutes with
+# no browser attached AND no PTY output. 0 disables it. Default 30.
+config :orca_hub,
+       :terminal_idle_timeout_minutes,
+       String.to_integer(System.get_env("ORCA_TERMINAL_IDLE_TIMEOUT_MINUTES") || "30")
+
 # Agent CLI isolation (OrcaHub.ProcessIsolation, ORCAHUB3-145/146). Every
 # node kills each agent CLI's whole process tree when its port goes away.
 # Where the unit delegates its cgroup (Delegate=yes + DelegateSubgroup=beam,

@@ -58,6 +58,8 @@ defmodule OrcaHub.TerminalRunner do
   @resize_debounce_ms 100
   @max_dimension 1_000
 
+  @default_idle_timeout_minutes 30
+
   # API
 
   def child_spec(opts) do
@@ -89,6 +91,25 @@ defmodule OrcaHub.TerminalRunner do
 
   def get_scrollback(terminal_id) do
     GenServer.call(via(terminal_id), :get_scrollback)
+  end
+
+  @doc """
+  Registers `client` (a `TerminalChannel` process, on any node) as viewing
+  this terminal and returns `{:ok, scrollback}`. The runner monitors it:
+  while any client is attached the terminal is never idle-stopped.
+  """
+  def attach(terminal_id, client) when is_pid(client) do
+    # A plain message, then the scrollback call (same sender, so in order):
+    # a runner from before attach existed ignores the message in its
+    # catch-all handle_info instead of crashing on an unknown call.
+    case GenServer.whereis(via(terminal_id)) do
+      nil ->
+        {:error, :not_running}
+
+      pid ->
+        send(pid, {:attach, client})
+        {:ok, GenServer.call(pid, :get_scrollback)}
+    end
   end
 
   def stop(terminal_id) do
@@ -129,37 +150,47 @@ defmodule OrcaHub.TerminalRunner do
 
     broadcast(terminal_id, {:terminal_status, :running})
 
-    {:ok,
-     %{
-       terminal_id: terminal_id,
-       port: port,
-       os_pid: os_pid,
-       spawn: spawn,
-       directory: terminal.directory,
-       shell: terminal.shell || "/bin/bash",
-       cols: terminal.cols || 120,
-       rows: terminal.rows || 40,
-       # The size last pushed to the pty (nil until the first push) and the
-       # one the row holds, so neither stty nor the DB sees a no-op resize.
-       applied_size: nil,
-       persisted_size: {terminal.cols, terminal.rows},
-       resize_timer: nil,
-       # The pty is resized only once the shell has written something: by
-       # then it has made the pts its controlling tty, so stty opening it
-       # can never claim it first.
-       shell_ready: false,
-       scrollback: <<>>,
-       row_check_ms: row_check_ms,
-       # true once the row's final status is written and broadcast, so
-       # terminate/2 never overwrites "dead" with "stopped" or broadcasts twice.
-       finalized: false
-     }}
+    state = %{
+      terminal_id: terminal_id,
+      port: port,
+      os_pid: os_pid,
+      spawn: spawn,
+      directory: terminal.directory,
+      shell: terminal.shell || "/bin/bash",
+      cols: terminal.cols || 120,
+      rows: terminal.rows || 40,
+      # The size last pushed to the pty (nil until the first push) and the
+      # one the row holds, so neither stty nor the DB sees a no-op resize.
+      applied_size: nil,
+      persisted_size: {terminal.cols, terminal.rows},
+      resize_timer: nil,
+      # The pty is resized only once the shell has written something: by
+      # then it has made the pts its controlling tty, so stty opening it
+      # can never claim it first.
+      shell_ready: false,
+      scrollback: <<>>,
+      row_check_ms: row_check_ms,
+      # true once the row's final status is written and broadcast, so
+      # terminate/2 never overwrites "dead" with "stopped" or broadcasts twice.
+      finalized: false,
+      # Idle teardown: attached clients (pid => monitor ref), the last
+      # output/input/attach/detach, and the armed timer (nil while a client
+      # is attached or when disabled).
+      clients: %{},
+      last_activity: now_ms(),
+      idle_timeout_ms: Keyword.get_lazy(opts, :idle_timeout_ms, &configured_idle_timeout_ms/0),
+      idle_timer: nil
+    }
+
+    # Started with nobody watching (the index's Start, a resume): it gets the
+    # full timeout from now.
+    {:ok, arm_idle_timer(state)}
   end
 
   @impl true
   def handle_cast({:write, data}, %{port: port} = state) when not is_nil(port) do
     Port.command(port, data)
-    {:noreply, state}
+    {:noreply, %{state | last_activity: now_ms()}}
   end
 
   def handle_cast({:write, _data}, state), do: {:noreply, state}
@@ -185,7 +216,7 @@ defmodule OrcaHub.TerminalRunner do
     broadcast(state.terminal_id, {:terminal_output, data})
 
     scrollback = truncate_scrollback(state.scrollback <> data, @scrollback_size)
-    state = %{state | scrollback: scrollback}
+    state = %{state | scrollback: scrollback, last_activity: now_ms()}
 
     if state.shell_ready do
       {:noreply, state}
@@ -210,6 +241,41 @@ defmodule OrcaHub.TerminalRunner do
     {:stop, {:shutdown, :deleted}, state}
   end
 
+  def handle_info({:attach, client}, state) when is_pid(client) do
+    clients = Map.put_new_lazy(state.clients, client, fn -> Process.monitor(client) end)
+    {:noreply, cancel_idle_timer(%{state | clients: clients, last_activity: now_ms()})}
+  end
+
+  def handle_info({:DOWN, ref, :process, client, _reason}, state)
+      when is_map_key(state.clients, client) do
+    if state.clients[client] == ref do
+      clients = Map.delete(state.clients, client)
+      {:noreply, arm_idle_timer(%{state | clients: clients, last_activity: now_ms()})}
+    else
+      {:noreply, state}
+    end
+  end
+
+  # Only the timer armed last counts; a cancelled one may already have
+  # delivered its message.
+  def handle_info({:idle_check, ref}, %{idle_timer: {ref, _timer}} = state) do
+    state = %{state | idle_timer: nil}
+    idle_for = now_ms() - state.last_activity
+
+    cond do
+      state.clients != %{} ->
+        {:noreply, state}
+
+      idle_for >= state.idle_timeout_ms ->
+        {:stop, {:shutdown, :idle}, state}
+
+      true ->
+        {:noreply, arm_idle_timer(state, state.idle_timeout_ms - idle_for)}
+    end
+  end
+
+  def handle_info({:idle_check, _stale}, state), do: {:noreply, state}
+
   def handle_info(:apply_size, state) do
     {:noreply, apply_size(%{state | resize_timer: nil})}
   end
@@ -230,6 +296,7 @@ defmodule OrcaHub.TerminalRunner do
 
   @impl true
   def terminate(reason, state) do
+    if reason == {:shutdown, :idle}, do: note_idle_stop(state)
     state = kill_tree(state, @stop_reap_grace_ms)
     finalize(state, final_status(reason))
     :ok
@@ -259,6 +326,22 @@ defmodule OrcaHub.TerminalRunner do
     if is_integer(state.os_pid), do: OSProcess.signal_group(state.os_pid, "KILL")
 
     kill_tree(%{state | port: nil}, grace_ms)
+  end
+
+  # The last line in the scrollback and on the output topic, for whoever
+  # looks next; the row reads "stopped" like any other stop.
+  defp note_idle_stop(state) do
+    minutes = div(state.idle_timeout_ms, 60_000)
+
+    Logger.info(
+      "Terminal #{state.terminal_id} stopped after #{minutes} min with no client and no output"
+    )
+
+    note =
+      "\r\n[Terminal stopped: no viewer and no output for #{minutes} minute(s). " <>
+        "Start it again to get a new shell.]\r\n"
+
+    broadcast(state.terminal_id, {:terminal_output, note})
   end
 
   defp final_status({:shutdown, :deleted}), do: :deleted
@@ -295,6 +378,42 @@ defmodule OrcaHub.TerminalRunner do
   catch
     :exit, reason -> {:error, reason}
   end
+
+  defp arm_idle_timer(state), do: arm_idle_timer(state, state.idle_timeout_ms)
+
+  defp arm_idle_timer(%{idle_timeout_ms: timeout} = state, _delay_ms)
+       when not is_integer(timeout) or timeout <= 0,
+       do: state
+
+  defp arm_idle_timer(%{clients: clients} = state, _delay_ms) when clients != %{}, do: state
+
+  defp arm_idle_timer(state, delay_ms) do
+    state = cancel_idle_timer(state)
+    ref = make_ref()
+    timer = Process.send_after(self(), {:idle_check, ref}, max(delay_ms, 0))
+    %{state | idle_timer: {ref, timer}}
+  end
+
+  defp cancel_idle_timer(%{idle_timer: nil} = state), do: state
+
+  defp cancel_idle_timer(%{idle_timer: {_ref, timer}} = state) do
+    Process.cancel_timer(timer)
+    %{state | idle_timer: nil}
+  end
+
+  # ORCA_TERMINAL_IDLE_TIMEOUT_MINUTES (config/runtime.exs); 0 disables.
+  defp configured_idle_timeout_ms do
+    case Application.get_env(
+           :orca_hub,
+           :terminal_idle_timeout_minutes,
+           @default_idle_timeout_minutes
+         ) do
+      minutes when is_integer(minutes) and minutes > 0 -> minutes * 60_000
+      _ -> 0
+    end
+  end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp schedule_resize(%{resize_timer: nil} = state, delay_ms) do
     %{state | resize_timer: Process.send_after(self(), :apply_size, delay_ms)}

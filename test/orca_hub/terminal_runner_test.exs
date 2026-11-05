@@ -209,6 +209,67 @@ defmodule OrcaHub.TerminalRunnerTest do
     end
   end
 
+  describe "idle teardown" do
+    defp start_with!(terminal, opts) do
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          TerminalSupervisor,
+          {TerminalRunner, [terminal_id: terminal.id] ++ opts}
+        )
+
+      script_pid = :sys.get_state(pid).os_pid
+      bash_pid = eventually(fn -> List.first(children(script_pid)) end)
+      {pid, script_pid, bash_pid}
+    end
+
+    test "with no client and no output it stops, notes why, and kills the tree",
+         %{terminal: terminal} do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal.id}")
+      {pid, script_pid, bash_pid} = start_with!(terminal, idle_timeout_ms: 300)
+      ref = Process.monitor(pid)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :idle}}, 2_000
+      assert await_output(~r/no viewer and no output/) =~ "Terminal stopped"
+      assert_all_gone([script_pid, bash_pid], 1_000)
+      assert Terminals.get_terminal(terminal.id).status == "stopped"
+    end
+
+    test "an attached client keeps it running; its leaving restarts the clock",
+         %{terminal: terminal} do
+      {pid, _script_pid, _bash_pid} = start_with!(terminal, idle_timeout_ms: 300)
+      client = spawn(fn -> Process.sleep(:infinity) end)
+      assert {:ok, _scrollback} = TerminalRunner.attach(terminal.id, client)
+      ref = Process.monitor(pid)
+
+      refute_receive {:DOWN, ^ref, _, _, _}, 800
+
+      Process.exit(client, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :idle}}, 2_000
+    end
+
+    test "PTY output alone keeps it running", %{terminal: terminal} do
+      {pid, _script_pid, bash_pid} = start_with!(terminal, idle_timeout_ms: 400)
+      run_in_shell!(terminal, bash_pid, "while true; do echo tick; sleep 0.1; done")
+      ref = Process.monitor(pid)
+
+      refute_receive {:DOWN, ^ref, _, _, _}, 1_200
+    end
+
+    test "0 disables it", %{terminal: terminal} do
+      {pid, _script_pid, _bash_pid} = start_with!(terminal, idle_timeout_ms: 0)
+      assert :sys.get_state(pid).idle_timer == nil
+    end
+
+    test "ORCA_TERMINAL_IDLE_TIMEOUT_MINUTES (app env) is the default", %{terminal: terminal} do
+      previous = Application.get_env(:orca_hub, :terminal_idle_timeout_minutes)
+      Application.put_env(:orca_hub, :terminal_idle_timeout_minutes, 7)
+      on_exit(fn -> Application.put_env(:orca_hub, :terminal_idle_timeout_minutes, previous) end)
+
+      {pid, _script_pid, _bash_pid} = start!(terminal)
+      assert :sys.get_state(pid).idle_timeout_ms == 7 * 60_000
+    end
+  end
+
   describe "truncate_scrollback/2" do
     test "starts the kept window after the first newline, not mid escape sequence" do
       data = "old line\n\e[01;32mprompt\e[00m$ ls\nfile\n"
