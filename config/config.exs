@@ -93,15 +93,18 @@ config :esbuild,
   # priv/static/assets/js/lazy/. Kept out of app.js, which every page loads:
   #   terminal.js + terminal.css   xterm and its stylesheet, for the Terminal
   #                                hook (about half of app.js before the split)
+  #   mermaid.js                   the diagram renderer, for ```mermaid blocks
   #
-  # ESM with --splitting, so code that two entries share becomes a chunk.
-  # app.js stays a classic script; it import()s these entries by the URLs that
-  # root.html.heex puts in its `orca-lazy:*` meta tags (digested in prod). The
-  # chunks are reached by relative import from the entry, so they are
-  # content-hashed here instead of by phx.digest.
+  # ESM with --splitting, so mermaid's own per-diagram dynamic imports become
+  # chunks, fetched only for the diagram types a page shows. app.js stays a
+  # classic script; it import()s these entries by the URLs that root.html.heex
+  # puts in its `orca-lazy:*` meta tags (digested in prod). The chunks are
+  # reached by relative import from the entry, so they are content-hashed
+  # here instead of by phx.digest.
   orca_hub_lazy: [
     args: ~w(
       js/lazy/terminal.js
+      js/lazy/mermaid.js
       --bundle --target=es2022 --format=esm --splitting
       --outdir=../priv/static/assets/js/lazy
       --chunk-names=chunks/[name]-[hash]

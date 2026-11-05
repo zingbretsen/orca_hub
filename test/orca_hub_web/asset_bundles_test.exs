@@ -114,12 +114,29 @@ defmodule OrcaHubWeb.AssetBundlesTest do
     assert Enum.any?(bundled_inputs(meta, "/terminal.js"), &(&1 =~ "node_modules/@xterm/xterm/"))
   end
 
-  test "app.js, loaded on every page, does not bundle xterm", %{dir: dir} do
+  test "the mermaid bundle is split per diagram type", %{dir: dir} do
+    {lazy, meta} = build!(:orca_hub_lazy, dir)
+
+    assert Map.has_key?(lazy, "assets/js/lazy/mermaid.js")
+
+    assert Enum.any?(
+             Map.keys(meta["inputs"]),
+             &(&1 =~ "node_modules/mermaid/dist/mermaid.core.mjs")
+           )
+
+    # Each diagram type is its own chunk, fetched only when a page draws one.
+    assert Enum.any?(Map.keys(lazy), &(&1 =~ ~r{^assets/js/lazy/chunks/flowDiagram-.*\.js$}))
+    assert Enum.any?(Map.keys(lazy), &(&1 =~ ~r{^assets/js/lazy/chunks/sequenceDiagram-.*\.js$}))
+  end
+
+  test "app.js, loaded on every page, bundles neither xterm nor mermaid", %{dir: dir} do
     {app, meta} = build!(:orca_hub, dir)
 
     assert Map.has_key?(app, "assets/js/app.js")
     inputs = bundled_inputs(meta, "/app.js")
     assert Enum.any?(inputs, &(&1 =~ "js/terminal_hook.js"))
+    assert Enum.any?(inputs, &(&1 =~ "js/mermaid_blocks.js"))
     assert Enum.filter(inputs, &(&1 =~ "node_modules/@xterm/")) == []
+    assert Enum.filter(inputs, &(&1 =~ "node_modules/mermaid/")) == []
   end
 end

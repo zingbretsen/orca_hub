@@ -34,6 +34,8 @@ import {
 } from "./tts_rail"
 import { voiceViewShowing } from "./voice_view_flag"
 import { PanelLayoutHook, panelLayout } from "./panel_layout"
+import { lazyLoader } from "./lazy_assets"
+import { startMermaidBlocks } from "./mermaid_blocks"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
@@ -2650,6 +2652,12 @@ window.addEventListener("phx:update", () => {
       delete window.__closeDropdownTimer
     }
   }
+})
+
+// ```mermaid code blocks -> diagrams, on every page (mermaid_blocks.js). The
+// renderer is a lazy bundle, fetched only when a page first shows one.
+startMermaidBlocks({
+  loadMermaid: () => lazyLoader().loadModule("mermaid-js").then((bundle) => bundle.default),
 })
 
 // connect if there are any LiveViews on the page

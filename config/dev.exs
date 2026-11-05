@@ -34,6 +34,8 @@ config :orca_hub, OrcaHubWeb.Endpoint,
   secret_key_base: "NVsYJ7BPReB/KKvpg6d1ZkV4lL9sBygXxw7MUEzoodvH7AW8PKaazad4X10ztMHE",
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:orca_hub, ~w(--sourcemap=inline --watch)]},
+    # The bundles app.js loads on demand (xterm, mermaid); see config.exs.
+    esbuild_lazy: {Esbuild, :install_and_run, [:orca_hub_lazy, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:orca_hub, ~w(--watch)]}
   ]
 
