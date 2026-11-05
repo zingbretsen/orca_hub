@@ -40,6 +40,17 @@ defmodule OrcaHubWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # The lazy bundles' chunks (the `orca_hub_lazy` esbuild profile). Their
+  # entry files are fetched by digested URL with `?vsn=`, but the chunks are
+  # reached by relative import, so without this they would get only the ETag
+  # revalidation below. esbuild content-hashes every chunk name, so a chunk's
+  # bytes never change and it can be cached for good.
+  plug Plug.Static,
+    at: "/assets/js/lazy/chunks",
+    from: {:orca_hub, "priv/static/assets/js/lazy/chunks"},
+    gzip: not code_reloading?,
+    cache_control_for_etags: "public, max-age=31536000, immutable"
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),
