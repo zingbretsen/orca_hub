@@ -85,12 +85,9 @@ defmodule OrcaHubWeb.TerminalChannel do
 
   def handle_info(_msg, socket), do: {:noreply, socket}
 
+  # One database (hub); HubRPC resolves to it from any node, no fan-out needed.
   defp find_terminal!(id) do
-    results = Cluster.fan_out(HubRPC, :get_terminal, [id])
-
-    case Enum.find(results, fn {_n, t} -> t != nil end) do
-      {_n, terminal} -> terminal
-      nil -> raise Ecto.NoResultsError, queryable: OrcaHub.Terminals.Terminal
-    end
+    HubRPC.get_terminal(id) ||
+      raise Ecto.NoResultsError, queryable: OrcaHub.Terminals.Terminal
   end
 end

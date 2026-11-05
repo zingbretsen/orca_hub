@@ -44,17 +44,24 @@ defmodule OrcaHub.Cluster do
   @node_name_cache_ttl_ms above.
   """
   def node_name(n) when is_atom(n) do
-    if n == node() do
-      display_name()
-    else
-      OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, n}, @node_name_cache_ttl_ms, fn ->
-        try do
-          :erpc.call(n, __MODULE__, :display_name, [], 5_000)
-        catch
-          _, _ ->
-            n |> Atom.to_string() |> String.split("@") |> List.last()
-        end
-      end)
+    cond do
+      n == node() ->
+        display_name()
+
+      # Not connected: :erpc would auto-connect and stall on a dead host
+      # (about 3 s per call for a ghost node). Never reach out; use the hostname.
+      not node_available?(n) ->
+        n |> Atom.to_string() |> String.split("@") |> List.last()
+
+      true ->
+        OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, n}, @node_name_cache_ttl_ms, fn ->
+          try do
+            :erpc.call(n, __MODULE__, :display_name, [], 5_000)
+          catch
+            _, _ ->
+              n |> Atom.to_string() |> String.split("@") |> List.last()
+          end
+        end)
     end
   end
 
@@ -685,20 +692,15 @@ defmodule OrcaHub.Cluster do
   # -------------------------------------------------------------------
 
   def list_terminals do
-    fan_out(HubRPC, :list_terminals, [])
-    |> dedup_tagged()
+    # One database (hub); HubRPC resolves to it from any node.
+    HubRPC.list_terminals() |> tag_terminals()
   end
 
   def list_terminals_for_project(project_id) do
-    fan_out(HubRPC, :list_terminals_for_project, [project_id])
-    |> dedup_tagged()
+    HubRPC.list_terminals_for_project(project_id) |> tag_terminals()
   end
 
-  defp dedup_tagged(tagged_results) do
-    tagged_results
-    |> Enum.uniq_by(fn {_n, item} -> item.id end)
-    |> Enum.map(fn {_n, item} -> {runner_node_for(item), item} end)
-  end
+  defp tag_terminals(items), do: Enum.map(items, &{runner_node_for(&1), &1})
 
   # Unlike get_session!/2 (which always queries the single shared hub DB
   # directly via HubRPC, ignoring n), this stays routed through rpc/5:

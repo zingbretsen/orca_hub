@@ -258,21 +258,15 @@ defmodule OrcaHub.ClusterTest do
              end) == :still_uncached
     end
 
-    test "a remote/offline node's resolved name is cached under {:cluster_node_name, node}" do
+    test "a disconnected node atom gets the hostname fallback with no erpc (no auto-connect stall)" do
       OrcaHub.Backend.Cache.invalidate({:cluster_node_name, @offline_node})
 
-      name = Cluster.node_name(@offline_node)
+      {us, name} = :timer.tc(fn -> Cluster.node_name(@offline_node) end)
+
       assert name == "totally-offline-host"
-
-      # get_or_run/3 only calls its fun on a cache miss — a fun that flunks
-      # proves the entry above is already cached, not a coincidental repeat
-      # computation.
-      cached =
-        OrcaHub.Backend.Cache.get_or_run({:cluster_node_name, @offline_node}, 60_000, fn ->
-          flunk("node_name/1 should have populated the cache, not left it to us")
-        end)
-
-      assert cached == name
+      # An :erpc to an unreachable host would block for seconds (EPMD connect).
+      assert us < 50_000
+      refute @offline_node in Node.list()
     end
   end
 
