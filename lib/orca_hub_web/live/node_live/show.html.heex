@@ -177,9 +177,13 @@
       >
         git is not installed on this node.
       </span>
-      <span :if={is_nil(@global_gitignore)} class="text-xs text-base-content/50">
+      <span
+        :if={is_nil(@global_gitignore) && @node_reads_loaded}
+        class="text-xs text-base-content/50"
+      >
         Node unavailable — reflects live git config on the node, so it needs an active connection.
       </span>
+      <span :if={!@node_reads_loaded} class="text-xs text-base-content/50">Loading…</span>
     </:item>
   </.list>
 </div>

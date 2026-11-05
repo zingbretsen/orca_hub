@@ -25,11 +25,14 @@ defmodule OrcaHubWeb.NodeLive.Show do
     connected? = Cluster.nodes() |> Enum.map(&Atom.to_string/1) |> Enum.member?(node.name)
     config_node = if connected?, do: resolve_target_node(node.name), else: nil
 
-    node_config = if config_node, do: load_all_node_config(config_node), else: nil
-    managed_skills = if config_node, do: load_managed_skills(config_node), else: %{}
-    managed_pi_config = if config_node, do: load_managed_pi_config(config_node), else: %{}
+    # The node's live config is read on the connected mount only; the dead
+    # render shows "Loading" placeholders instead of paying for every read
+    # twice.
+    lv_connected? = Phoenix.LiveView.connected?(socket)
+    reads = load_node_reads(if(lv_connected?, do: config_node))
+    node_config = reads.node_config
 
-    if config_node && Phoenix.LiveView.connected?(socket) do
+    if config_node && lv_connected? do
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, BackendInstaller.topic(config_node))
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "skills")
       Phoenix.PubSub.subscribe(OrcaHub.PubSub, "pi_config")
@@ -42,18 +45,15 @@ defmodule OrcaHubWeb.NodeLive.Show do
         node: node,
         connected: connected?,
         config_node: config_node,
+        node_reads_loaded: lv_connected? or is_nil(config_node),
         node_config: node_config,
-        managed_skills: managed_skills,
-        managed_pi_config: managed_pi_config,
+        managed_skills: reads.managed_skills,
+        managed_pi_config: reads.managed_pi_config,
         backend_installer_status: nil,
-        backend_installer_running:
-          if(config_node,
-            do: load_backend_installer_running(config_node),
-            else: MapSet.new()
-          ),
+        backend_installer_running: reads.backend_installer_running,
         backend_installer_output: %{},
         backend_installer_result: %{},
-        global_gitignore: if(config_node, do: load_global_gitignore(config_node)),
+        global_gitignore: reads.global_gitignore,
         session_count: HubRPC.count_sessions_for_node(node.name),
         project_count: HubRPC.count_projects_for_node(node.name),
         config_sections_expanded: MapSet.new(),
@@ -76,9 +76,9 @@ defmodule OrcaHubWeb.NodeLive.Show do
         login_url: nil,
         login_status: nil,
         login_error: nil,
-        codex_status: codex_status_for(config_node),
-        codex_env_conflict?: codex_env_conflict_for(config_node),
-        pi_providers: pi_providers_for(config_node),
+        codex_status: reads.codex_status,
+        codex_env_conflict?: reads.codex_env_conflict?,
+        pi_providers: reads.pi_providers,
         pi_provider_options: BackendAuth.pi_provider_options(),
         codex_login_node: nil,
         codex_login_mode: nil,
@@ -1222,16 +1222,81 @@ defmodule OrcaHubWeb.NodeLive.Show do
   end
 
   defp load_managed_skills(config_node) do
-    Map.new(NodeConfig.backends(), fn backend ->
-      names =
-        case rpc(config_node, SkillSync, :managed_skill_names, [backend]) do
-          %MapSet{} = set -> set
-          _ -> MapSet.new()
-        end
-
-      {backend, names}
-    end)
+    Map.new(NodeConfig.backends(), &{&1, load_managed_skill_names(config_node, &1)})
   end
+
+  defp load_managed_skill_names(config_node, backend) do
+    case rpc(config_node, SkillSync, :managed_skill_names, [backend]) do
+      %MapSet{} = set -> set
+      _ -> MapSet.new()
+    end
+  end
+
+  # Everything the mount reads live from the node: 12 independent
+  # Cluster.rpc calls. Serially each one pays a round trip to a remote node
+  # (about 275 ms per mount on orca-dell); concurrently the mount waits for
+  # the slowest. `nil` (node offline, or the dead render) reads nothing.
+  @node_read_timeout 12_000
+
+  defp load_node_reads(nil) do
+    %{
+      node_config: nil,
+      managed_skills: %{},
+      managed_pi_config: %{},
+      backend_installer_running: MapSet.new(),
+      global_gitignore: nil,
+      codex_status: codex_status_for(nil),
+      codex_env_conflict?: false,
+      pi_providers: []
+    }
+  end
+
+  defp load_node_reads(config_node) do
+    backends = NodeConfig.backends()
+
+    reads =
+      Enum.map(backends, &{{:config, &1}, fn -> load_backend_config(config_node, &1) end}) ++
+        Enum.map(backends, &{{:skills, &1}, fn -> load_managed_skill_names(config_node, &1) end}) ++
+        [
+          managed_pi_config: fn -> load_managed_pi_config(config_node) end,
+          backend_installer_running: fn -> load_backend_installer_running(config_node) end,
+          global_gitignore: fn -> load_global_gitignore(config_node) end,
+          codex_status: fn -> codex_status_for(config_node) end,
+          codex_env_conflict?: fn -> codex_env_conflict_for(config_node) end,
+          pi_providers: fn -> pi_providers_for(config_node) end
+        ]
+
+    results =
+      reads
+      |> Task.async_stream(fn {_key, read} -> read.() end,
+        max_concurrency: length(reads),
+        timeout: @node_read_timeout,
+        on_timeout: :kill_task
+      )
+      |> Enum.zip(reads)
+      |> Map.new(fn
+        {{:ok, value}, {key, _read}} -> {key, value}
+        {{:exit, reason}, {key, _read}} -> {key, node_read_fallback(key, reason)}
+      end)
+
+    results
+    |> Map.drop(Enum.flat_map(backends, &[{:config, &1}, {:skills, &1}]))
+    |> Map.merge(%{
+      node_config: Map.new(backends, &{&1, Map.fetch!(results, {:config, &1})}),
+      managed_skills: Map.new(backends, &{&1, Map.fetch!(results, {:skills, &1})})
+    })
+  end
+
+  # What a read that outlived @node_read_timeout shows: the same value an
+  # unreachable node gives it.
+  defp node_read_fallback({:config, _backend}, reason), do: {:error, {:node_read_failed, reason}}
+  defp node_read_fallback({:skills, _backend}, _reason), do: MapSet.new()
+  defp node_read_fallback(:managed_pi_config, _reason), do: %{}
+  defp node_read_fallback(:backend_installer_running, _reason), do: MapSet.new()
+  defp node_read_fallback(:global_gitignore, _reason), do: nil
+  defp node_read_fallback(:codex_status, _reason), do: codex_status_for(nil)
+  defp node_read_fallback(:codex_env_conflict?, _reason), do: false
+  defp node_read_fallback(:pi_providers, _reason), do: []
 
   defp load_managed_pi_config(config_node) do
     case rpc(config_node, PiConfigSync, :managed_names, []) do

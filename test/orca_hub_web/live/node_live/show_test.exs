@@ -67,6 +67,29 @@ defmodule OrcaHubWeb.NodeLive.ShowTest do
     refute html =~ "node-unavailable"
   end
 
+  # The mount's 12 live reads on the node (backend config, managed skills
+  # and pi config, installer state, global gitignore, codex/pi auth) used to
+  # run serially on BOTH the dead render and the connected mount.
+  test "the dead render skips the node's live reads; the connected mount loads them", %{
+    conn: conn
+  } do
+    {:ok, n} = ClusterNodes.upsert_seen(Atom.to_string(node()), "this-node")
+
+    html = conn |> get(~p"/nodes/#{n.id}") |> html_response(200)
+    assert html =~ "Loading…"
+    refute html =~ "Node unavailable — reflects live git config"
+
+    {:ok, view, html} = live(conn, ~p"/nodes/#{n.id}")
+    refute html =~ "Loading…"
+
+    assigns = :sys.get_state(view.pid).socket.assigns
+    assert assigns.node_reads_loaded
+    assert %{claude: %{entries: _}, codex: %{entries: _}, pi: %{entries: _}} = assigns.node_config
+
+    assert Map.keys(assigns.managed_skills) |> Enum.sort() ==
+             Enum.sort(Map.keys(assigns.node_config))
+  end
+
   test "shows a clear node-unavailable state for an offline node", %{conn: conn} do
     {:ok, n} = ClusterNodes.upsert_seen("orca@long-gone", "long-gone-node")
 
