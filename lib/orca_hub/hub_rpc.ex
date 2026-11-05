@@ -209,6 +209,15 @@ defmodule OrcaHub.HubRPC do
   def search_projects(query), do: call(OrcaHub.Projects, :search, [query])
 
   # -------------------------------------------------------------------
+  # Dashboard
+  # -------------------------------------------------------------------
+
+  def dashboard_session_counts, do: call(OrcaHub.Dashboard, :session_counts, [])
+
+  def dashboard_recent_sessions(limit, runner_nodes),
+    do: call(OrcaHub.Dashboard, :recent_sessions, [limit, runner_nodes])
+
+  # -------------------------------------------------------------------
   # Issues (minimal — backs the file_feature_request MCP tool and the
   # read-only issues UI; see OrcaHub.Issues moduledoc)
   # -------------------------------------------------------------------
