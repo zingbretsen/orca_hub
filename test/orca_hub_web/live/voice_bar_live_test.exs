@@ -24,6 +24,7 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
   use OrcaHubWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Ecto.Query, only: [from: 2]
 
   alias OrcaHub.Sessions
 
@@ -290,6 +291,65 @@ defmodule OrcaHubWeb.VoiceBarLiveTest do
         nil -> nil
         option -> option |> Floki.attribute("value") |> List.first()
       end
+    end
+  end
+
+  # The bar is on every page and mounts on both the dead render and the
+  # connected mount, and the picker only renders while voice is on, so its
+  # list loads when the mic turns on, never at mount.
+  describe "the picker list loads lazily" do
+    defp bar_assigns(bar), do: :sys.get_state(bar.pid).socket.assigns
+
+    test "the idle bar holds no session list; the mic turning on loads it", %{conn: conn} do
+      session = new_session(%{title: "listed once armed"})
+
+      {:ok, view, html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      refute html =~ "listed once armed"
+      assert bar_assigns(bar).sessions == []
+
+      armed = render_hook(bar, "voice-on", %{"on" => true})
+      assert armed =~ "listed once armed"
+      assert armed =~ session.id
+      assert length(bar_assigns(bar).sessions) <= 20
+    end
+
+    test "a target pushed while the mic is off is listed and selected once it turns on",
+         %{conn: conn} do
+      session = new_session(%{title: "targeted while idle"})
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+
+      render_hook(bar, "voice-target", %{"session_id" => session.id})
+      assert bar_assigns(bar).sessions == []
+
+      armed = render_hook(bar, "voice-on", %{"on" => true})
+      assert selected_value(armed) == session.id
+    end
+
+    test "the list is the newest 20 by updated_at", %{conn: conn} do
+      sessions = for i <- 1..22, do: new_session(%{title: "recent #{i}"})
+
+      # Newest last; spread updated_at so the order is unambiguous.
+      sessions
+      |> Enum.with_index()
+      |> Enum.each(fn {s, i} ->
+        at = NaiveDateTime.add(~N[2100-01-01 00:00:00], i, :second)
+
+        OrcaHub.Repo.update_all(
+          from(x in OrcaHub.Sessions.Session, where: x.id == ^s.id),
+          set: [updated_at: at]
+        )
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/projects")
+      bar = voice_bar(view)
+      render_hook(bar, "voice-on", %{"on" => true})
+
+      assert Enum.map(bar_assigns(bar).sessions, & &1.id) ==
+               sessions |> Enum.reverse() |> Enum.take(20) |> Enum.map(& &1.id)
     end
   end
 

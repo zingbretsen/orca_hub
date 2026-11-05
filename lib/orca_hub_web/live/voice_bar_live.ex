@@ -64,6 +64,10 @@ defmodule OrcaHubWeb.VoiceBarLive do
     * `"refresh_sessions"` — the picker was focused; re-read the list rather
       than re-querying on every session status broadcast.
 
+  The picker list itself loads LAZILY, when the mic turns on: the bar is on
+  every page and mounts twice per full page load, and the picker only
+  renders while voice is on. Until then `@sessions` is `[]`.
+
   ## The mobile voice view (ORCAHUB3-113 phase C)
 
   On a phone, a page that draws a voice layout turns full-screen while voice
@@ -199,7 +203,8 @@ defmodule OrcaHubWeb.VoiceBarLive do
      |> assign(:watching, nil)
      |> assign(:nav_paths, @nav_paths)
      |> assign(:vocab_groups, vocab_groups())
-     |> assign(:sessions, list_sessions()), layout: false}
+     # Loaded when the mic turns on (load_picker/1), never at mount.
+     |> assign(:sessions, []), layout: false}
   end
 
   @impl true
@@ -208,8 +213,10 @@ defmodule OrcaHubWeb.VoiceBarLive do
     # Turning the mic off takes the help with it: its trigger lives in the
     # armed bar, so an open panel would otherwise outlive the only control
     # that can close it.
-    {:noreply,
-     socket |> assign(:voice_on, on?) |> assign(:help_open, on? && socket.assigns.help_open)}
+    socket =
+      socket |> assign(:voice_on, on?) |> assign(:help_open, on? && socket.assigns.help_open)
+
+    {:noreply, if(on?, do: load_picker(socket), else: socket)}
   end
 
   def handle_event("toggle_help", _params, socket) do
@@ -237,8 +244,13 @@ defmodule OrcaHubWeb.VoiceBarLive do
     {:noreply, assign(socket, :sounds_on, !!enabled)}
   end
 
+  # Every session page pushes this on mount, mic on or off. With the mic off
+  # the picker is not rendered and its list is not loaded, so listing the
+  # target waits for load_picker/1 when the mic turns on.
   def handle_event("voice-target", %{"session_id" => id}, socket) when is_binary(id) do
-    {:noreply, socket |> assign(:target_session_id, id) |> ensure_listed(id) |> watch_turn(id)}
+    socket = assign(socket, :target_session_id, id)
+    socket = if socket.assigns.voice_on, do: ensure_listed(socket, id), else: socket
+    {:noreply, watch_turn(socket, id)}
   end
 
   # An explicit null means "the page stopped being a session page". The
@@ -265,10 +277,7 @@ defmodule OrcaHubWeb.VoiceBarLive do
   end
 
   def handle_event("refresh_sessions", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:sessions, list_sessions())
-     |> ensure_listed(socket.assigns.target_session_id)}
+    {:noreply, load_picker(socket)}
   end
 
   # ORCAHUB3-93 — the target session's turn, off its own `session:<id>` topic.
@@ -895,9 +904,12 @@ defmodule OrcaHubWeb.VoiceBarLive do
 
   defp session_label(%{id: id}), do: "session " <> String.slice(id, 0, 8)
 
-  defp list_sessions do
-    HubRPC.list_sessions(:all)
-    |> Enum.take(@picker_limit)
+  # A SQL `ORDER BY updated_at DESC LIMIT 20` of `id`/`title` only, not
+  # `list_sessions(:all)` trimmed in memory.
+  defp load_picker(socket) do
+    socket
+    |> assign(:sessions, HubRPC.list_recent_sessions(@picker_limit))
+    |> ensure_listed(socket.assigns.target_session_id)
   end
 
   # Keep the selected session in the list even when it has fallen off the

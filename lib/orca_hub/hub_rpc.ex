@@ -57,6 +57,8 @@ defmodule OrcaHub.HubRPC do
   def list_sessions(filter \\ :manual, opts \\ []),
     do: call(OrcaHub.Sessions, :list_sessions, [filter, opts])
 
+  def list_recent_sessions(limit), do: call(OrcaHub.Sessions, :list_recent_sessions, [limit])
+
   def list_running_sessions_for_node(node_name),
     do: call(OrcaHub.Sessions, :list_running_sessions_for_node, [node_name])
 

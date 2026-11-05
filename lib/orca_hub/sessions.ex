@@ -82,6 +82,27 @@ defmodule OrcaHub.Sessions do
   end
 
   @doc """
+  The `limit` most recently updated sessions `list_sessions(:all)` would
+  return, newest first, as `%Session{}` structs carrying only `id`, `title`
+  and `updated_at` — the voice bar's target picker
+  (`OrcaHubWeb.VoiceBarLive`), which needs a short jump list, not every live
+  session with its project preloaded (~550 KB and ~19 ms for 374 sessions,
+  on both passes of every page load before it went lazy).
+  """
+  def list_recent_sessions(limit) do
+    from(s in Session,
+      left_join: p in assoc(s, :project),
+      where: is_nil(s.archived_at),
+      where: is_nil(s.project_id) or is_nil(p.deleted_at),
+      where: s.kind == "session",
+      order_by: [desc: s.updated_at, desc: s.id],
+      limit: ^limit,
+      select: struct(s, [:id, :title, :updated_at])
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Non-archived sessions stuck at `status: "running"` whose `runner_node`
   matches `node_name` — candidates for `OrcaHub.SessionResumer`'s
   boot-time orphan sweep. Scoped to a single node by design (never-reassign
