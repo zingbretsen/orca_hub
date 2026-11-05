@@ -135,6 +135,14 @@ export const TerminalHook = {
         // only heard about later resizes.
         this._sentSize = null
         this._fitAndReport()
+        // Nothing is running behind this terminal (it stopped while no hook
+        // was mounted, e.g. idle teardown behind a closed panel): say so, and
+        // let the hosting LiveView offer a restart.
+        if (resp.running === false && !this._exited) {
+          this._exited = true
+          this.term.writeln("\r\n[Terminal is not running]")
+          this.pushEvent("terminal_status_changed", { terminal_id: terminalId, status: "stopped" })
+        }
       })
       .receive("error", (resp) => {
         this.term.writeln(`\r\n[Connection error: ${resp.reason || "unknown"}]`)

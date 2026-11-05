@@ -94,6 +94,18 @@ defmodule OrcaHubWeb.TerminalChannelTest do
       assert Process.alive?(socket2.channel_pid)
     end
 
+    test "the reply says no runner is behind a stopped terminal", %{terminal: terminal} do
+      {:ok, reply, _socket} =
+        subscribe_and_join(
+          socket(UserSocket, nil, %{}),
+          TerminalChannel,
+          "terminal:#{terminal.id}:client-a",
+          %{}
+        )
+
+      assert %{running: false, scrollback: ""} = reply
+    end
+
     test "a deleted terminal is refused, not crashed on", %{terminal: terminal} do
       {:ok, _} = Terminals.delete_terminal(terminal)
 
@@ -119,7 +131,7 @@ defmodule OrcaHubWeb.TerminalChannelTest do
         terminal: terminal,
         runner: runner
       } do
-        {:ok, _reply, socket} =
+        {:ok, reply, socket} =
           subscribe_and_join(
             socket(UserSocket, nil, %{}),
             TerminalChannel,
@@ -129,6 +141,7 @@ defmodule OrcaHubWeb.TerminalChannelTest do
 
         channel = socket.channel_pid
         assert Map.has_key?(:sys.get_state(runner).clients, channel)
+        assert %{running: true} = reply
 
         Process.unlink(channel)
         ref = Process.monitor(channel)

@@ -279,7 +279,11 @@ The hook reports its size on every (re)join and after a restart, debounced
   and shows a bar with Restart / Close; `TerminalLive.Show` shows the exit
   code and Start.
 - A join refused with `not_found` (the terminal was deleted) leaves the
-  channel, ending Phoenix's rejoin loop.
+  channel, ending Phoenix's rejoin loop. A join whose reply says
+  `running: false` (the terminal stopped while no hook was mounted, e.g.
+  idle teardown behind a closed session panel) writes "[Terminal is not
+  running]" and pushes `terminal_status_changed` `stopped`, so the host
+  offers Restart instead of a blank xterm.
 - A truncated scrollback starts at a line boundary, so a reattached xterm
   does not replay half an escape sequence.
 

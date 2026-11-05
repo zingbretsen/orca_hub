@@ -91,12 +91,16 @@ defmodule OrcaHubWeb.SessionLive.TerminalPanelTest do
   } do
     {view, terminal} = open_panel(conn, session)
 
+    # Also what the hook sends when it (re)joins a terminal with no runner,
+    # e.g. one idle-stopped while the panel was closed.
     render_hook(view, "terminal_status_changed", %{
       "terminal_id" => terminal.id,
       "status" => "stopped"
     })
 
     assert Process.alive?(view.pid)
+    assert has_element?(view, "#terminal-exited-#{terminal.id}", "Terminal stopped.")
+    assert has_element?(view, "#terminal-exited-#{terminal.id} button", "Restart")
   end
 
   test "Ctrl+D end to end: the exited tab offers Restart, and Restart brings the shell back", %{

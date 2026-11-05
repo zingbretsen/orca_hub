@@ -35,7 +35,16 @@ defmodule OrcaHubWeb.TerminalChannel do
         Phoenix.PubSub.subscribe(OrcaHub.PubSub, "term_output:#{terminal_id}")
         runner_node = Cluster.runner_node_for(terminal)
 
-        {:ok, %{scrollback: Base.encode64(attach(runner_node, terminal_id))},
+        {scrollback, running?} =
+          case attach(runner_node, terminal_id) do
+            {:ok, data} -> {data, true}
+            :not_running -> {<<>>, false}
+          end
+
+        # `running: false` lets the hook tell its LiveView: a terminal that
+        # stopped while no hook was mounted (idle teardown behind a closed
+        # panel) sent its status broadcast to nobody.
+        {:ok, %{scrollback: Base.encode64(scrollback), running: running?},
          socket
          |> assign(:terminal_id, terminal_id)
          |> assign(:runner_node, runner_node)}
@@ -92,15 +101,15 @@ defmodule OrcaHubWeb.TerminalChannel do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # Registers this channel with the runner (which monitors it: a terminal
-  # with a viewer is never idle-stopped) and returns its scrollback. Empty
-  # when no runner is alive (or it stopped between the lookup and the call,
-  # or its node is unreachable).
+  # with a viewer is never idle-stopped) and returns `{:ok, scrollback}`, or
+  # `:not_running` when no runner is alive (or it stopped between the lookup
+  # and the call, or its node is unreachable).
   defp attach(runner_node, terminal_id) do
     case guarded(fn ->
            Cluster.rpc(runner_node, TerminalRunner, :attach, [terminal_id, self()])
          end) do
-      {:ok, data} when is_binary(data) -> data
-      _ -> <<>>
+      {:ok, data} when is_binary(data) -> {:ok, data}
+      _ -> :not_running
     end
   end
 

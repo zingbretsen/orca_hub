@@ -400,6 +400,16 @@ console.log("TerminalHook channel wiring")
   }
 
   {
+    const { hook, channel } = openHook()
+    channel.replyOk({ scrollback: "", running: false })
+    eq("a join with no runner behind it tells the LiveView", hook.events, [
+      ["terminal_status_changed", { terminal_id: "t9", status: "stopped" }],
+    ])
+    ok("and says so in the xterm", hook.term.written.includes("\r\n[Terminal is not running]"))
+    hook.destroyed()
+  }
+
+  {
     const { hook, channel } = openHook({ width: 0 })
     channel.replyOk({ scrollback: "" })
     await wait(200)
