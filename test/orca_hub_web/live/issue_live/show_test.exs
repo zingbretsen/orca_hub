@@ -67,6 +67,17 @@ defmodule OrcaHubWeb.IssueLive.ShowTest do
     assert html =~ "Saw it again today."
   end
 
+  # The page reads only the project's name. It used to preload all of the
+  # project's sessions, archived included, on both passes.
+  test "loads the project without its sessions", %{conn: conn, project: project} do
+    {:ok, issue} = Issues.create_issue(%{title: "No preload", project_id: project.id})
+
+    {:ok, view, _html} = live(conn, ~p"/issues/#{issue.id}")
+
+    assert %Ecto.Association.NotLoaded{} =
+             :sys.get_state(view.pid).socket.assigns.project.sessions
+  end
+
   test "resolves the route id by short key", %{conn: conn, project: project} do
     {:ok, issue} = Issues.create_issue(%{title: "Keyed lookup", project_id: project.id})
     key = Issues.render_key(issue)

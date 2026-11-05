@@ -24,21 +24,34 @@ defmodule OrcaHub.Projects do
     )
   end
 
-  def get_project!(id) do
-    Repo.get!(Project, id)
-    |> Repo.preload(sessions: from(s in OrcaHub.Sessions.Session, order_by: [desc: s.updated_at]))
+  # Neither getter preloads `sessions`: a long-lived project has well over a
+  # thousand of them (archived included), which made every lookup about
+  # 100x slower and a multi-MB term over HubRPC. `ProjectLive.Show` is the
+  # only page that lists them, via list_project_sessions/2.
+  def get_project!(id), do: Repo.get!(Project, id)
+
+  def get_project(id), do: Repo.get(Project, id)
+
+  @doc """
+  A project's sessions, most recently updated first. Archived sessions are
+  left out unless `include_archived: true`.
+  """
+  def list_project_sessions(project_id, opts \\ []) do
+    query =
+      from s in OrcaHub.Sessions.Session,
+        where: s.project_id == ^project_id,
+        order_by: [desc: s.updated_at]
+
+    query =
+      if Keyword.get(opts, :include_archived, false),
+        do: query,
+        else: from(s in query, where: is_nil(s.archived_at))
+
+    Repo.all(query)
   end
 
-  def get_project(id) do
-    case Repo.get(Project, id) do
-      nil -> nil
-      project -> Repo.preload(project, sessions: [])
-    end
-  end
-
-  # Lightweight lookup for SessionRunner init — avoids the sessions preload
-  # that get_project/1 and get_project!/1 do, since this is called on every
-  # session start and only the single boolean is needed.
+  # Lightweight lookup for SessionRunner init — only the single boolean is
+  # needed, so it skips loading the whole project row.
   def get_commit_trailer(project_id) do
     Repo.one(from p in Project, where: p.id == ^project_id, select: p.commit_trailer)
   end

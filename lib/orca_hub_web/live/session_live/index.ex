@@ -99,7 +99,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
           %{}
 
         id ->
-          project = Projects.get_project!(id)
+          project = HubRPC.get_project!(id)
           %{"project_id" => id, "directory" => project.directory}
       end
 
@@ -327,7 +327,7 @@ defmodule OrcaHubWeb.SessionLive.Index do
           params
 
         project_id ->
-          project = Projects.get_project!(project_id)
+          project = HubRPC.get_project!(project_id)
           Map.put(params, "directory", project.directory)
       end
 

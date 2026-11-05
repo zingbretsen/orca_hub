@@ -55,6 +55,15 @@ defmodule OrcaHubWeb.ArtifactLive.ShowTest do
     assert html =~ artifact.name
   end
 
+  # The page reads only the project's name and node. It used to preload all
+  # of the project's sessions, archived included, on both passes.
+  test "loads the project without its sessions", %{conn: conn, artifact: artifact} do
+    {:ok, view, _html} = live(conn, ~p"/artifacts/#{artifact.id}")
+
+    assert %Ecto.Association.NotLoaded{} =
+             :sys.get_state(view.pid).socket.assigns.project.sessions
+  end
+
   test "renders a download link pointed at the download route", %{conn: conn, artifact: artifact} do
     {:ok, _view, html} = live(conn, ~p"/artifacts/#{artifact.id}")
 

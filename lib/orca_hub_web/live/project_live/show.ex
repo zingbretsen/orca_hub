@@ -7,6 +7,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
   alias OrcaHub.Triggers.Trigger
   alias OrcaHubWeb.{BlockEditor, FilePreview, Markdown, StructuredEditor}
 
+  @sessions_reload_ms 500
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     if connected?(socket) do
@@ -31,6 +33,8 @@ defmodule OrcaHubWeb.ProjectLive.Show do
      socket
      |> assign(
        show_archived_sessions: false,
+       sessions: HubRPC.list_project_sessions(project.id),
+       sessions_reload_timer: nil,
        project: project,
        project_node: project_node,
        node_unavailable: node_unavailable,
@@ -164,8 +168,16 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     {:noreply, assign(socket, edit_form: to_form(changeset))}
   end
 
+  # Archived sessions are only fetched while the toggle is on: a long-lived
+  # project has over a thousand of them.
   def handle_event("toggle_archived_sessions", _params, socket) do
-    {:noreply, assign(socket, show_archived_sessions: !socket.assigns.show_archived_sessions)}
+    socket = assign(socket, show_archived_sessions: !socket.assigns.show_archived_sessions)
+
+    if socket.assigns.show_archived_sessions do
+      {:noreply, load_sessions(socket)}
+    else
+      {:noreply, update(socket, :sessions, &Enum.reject(&1, fn s -> s.archived_at end))}
+    end
   end
 
   # The directory browser now serves the Move action's destination picker (the
@@ -1150,9 +1162,33 @@ defmodule OrcaHubWeb.ProjectLive.Show do
     end
   end
 
-  def handle_info({_session_id, _payload}, socket) do
-    project = HubRPC.get_project!(socket.assigns.project.id)
-    {:noreply, assign(socket, project: project)}
+  # Every agent event is broadcast on "sessions" too, so only the changes the
+  # sessions table shows (status, title) trigger a reload, and a burst of
+  # them collapses into one query.
+  def handle_info({_session_id, {tag, _}}, socket) when tag in [:status, :title_updated] do
+    {:noreply, schedule_sessions_reload(socket)}
+  end
+
+  def handle_info(:reload_sessions, socket) do
+    {:noreply, socket |> assign(sessions_reload_timer: nil) |> load_sessions()}
+  end
+
+  def handle_info({_session_id, _payload}, socket), do: {:noreply, socket}
+
+  defp schedule_sessions_reload(%{assigns: %{sessions_reload_timer: nil}} = socket) do
+    timer = Process.send_after(self(), :reload_sessions, @sessions_reload_ms)
+    assign(socket, sessions_reload_timer: timer)
+  end
+
+  defp schedule_sessions_reload(socket), do: socket
+
+  defp load_sessions(socket) do
+    sessions =
+      HubRPC.list_project_sessions(socket.assigns.project.id,
+        include_archived: socket.assigns.show_archived_sessions
+      )
+
+    assign(socket, sessions: sessions)
   end
 
   # An image/video is previewed, never text-loaded (ORCAHUB3-77): the

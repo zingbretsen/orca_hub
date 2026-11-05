@@ -15,7 +15,7 @@ defmodule OrcaHubWeb.ProjectLive.ShowTest do
 
   import Phoenix.LiveViewTest
 
-  alias OrcaHub.Projects
+  alias OrcaHub.{Projects, Sessions}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "project_show_#{System.unique_integer([:positive])}")
@@ -39,5 +39,90 @@ defmodule OrcaHubWeb.ProjectLive.ShowTest do
     {:ok, _view, html} = live(conn, ~p"/projects/#{project.id}")
 
     assert html =~ "not currently connected"
+  end
+
+  describe "sessions table" do
+    defp project_session(project, title, attrs \\ %{}) do
+      {:ok, session} =
+        Sessions.create_session(
+          Map.merge(%{directory: project.directory, project_id: project.id, title: title}, attrs)
+        )
+
+      session
+    end
+
+    # Counts the queries the LiveView process itself runs (async: true, so
+    # other tests' queries run in other processes and are ignored).
+    defp count_view_queries(view) do
+      test_pid = self()
+      lv_pid = view.pid
+      handler_id = "project-show-queries-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:orca_hub, :repo, :query],
+        fn _event, _measurements, _metadata, _config ->
+          if self() == lv_pid, do: send(test_pid, :lv_query)
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+    end
+
+    defp drain_lv_queries(count \\ 0) do
+      receive do
+        :lv_query -> drain_lv_queries(count + 1)
+      after
+        0 -> count
+      end
+    end
+
+    test "lists live sessions, and archived ones only while the toggle is on", %{
+      conn: conn,
+      project: project
+    } do
+      project_session(project, "live-session")
+      project_session(project, "archived-session", %{archived_at: ~U[2026-01-01 00:00:00Z]})
+
+      {:ok, view, html} = live(conn, ~p"/projects/#{project.id}")
+
+      assert html =~ "live-session"
+      refute html =~ "archived-session"
+
+      html = view |> element("input[phx-click='toggle_archived_sessions']") |> render_click()
+      assert html =~ "archived-session"
+      assert html =~ "live-session"
+
+      html = view |> element("input[phx-click='toggle_archived_sessions']") |> render_click()
+      refute html =~ "archived-session"
+      assert html =~ "live-session"
+    end
+
+    test "agent events run no query; a burst of status changes reloads the list once", %{
+      conn: conn,
+      project: project
+    } do
+      {:ok, view, _html} = live(conn, ~p"/projects/#{project.id}")
+      count_view_queries(view)
+
+      # Every agent event is also broadcast on "sessions"; this page used to
+      # reload the whole project (every session, archived included) per event.
+      for _ <- 1..20,
+          do: send(view.pid, {Ecto.UUID.generate(), {:event, %{"type" => "assistant"}}})
+
+      render(view)
+      assert drain_lv_queries() == 0
+
+      new_session = project_session(project, "arrived-later")
+
+      for _ <- 1..5, do: send(view.pid, {new_session.id, {:status, :idle}})
+      render(view)
+      refute render(view) =~ "arrived-later"
+
+      Process.sleep(700)
+      assert render(view) =~ "arrived-later"
+      assert drain_lv_queries() == 1
+    end
   end
 end

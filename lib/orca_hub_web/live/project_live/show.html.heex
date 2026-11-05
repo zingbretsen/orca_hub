@@ -314,8 +314,8 @@
 
   <% filtered_sessions =
     if @show_archived_sessions,
-      do: @project.sessions,
-      else: Enum.reject(@project.sessions, & &1.archived_at) %>
+      do: @sessions,
+      else: Enum.reject(@sessions, & &1.archived_at) %>
 
   <div :if={filtered_sessions == []} class="text-sm text-base-content/50 p-4 text-center">
     No sessions yet.

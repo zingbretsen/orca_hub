@@ -190,6 +190,9 @@ defmodule OrcaHub.HubRPC do
   def get_project!(id), do: call(OrcaHub.Projects, :get_project!, [id])
   def get_project(id), do: call(OrcaHub.Projects, :get_project, [id])
 
+  def list_project_sessions(project_id, opts \\ []),
+    do: call(OrcaHub.Projects, :list_project_sessions, [project_id, opts])
+
   def get_commit_trailer(project_id),
     do: call(OrcaHub.Projects, :get_commit_trailer, [project_id])
 
