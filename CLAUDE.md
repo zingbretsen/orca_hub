@@ -14,7 +14,23 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
     ```
     export $(grep -E "^DB_" .env | xargs) && env -u PHX_SERVER -u ORCA_MODE -u PORT -u CLUSTER_NODES -u CLUSTER_DNS_QUERY mix test
     ```
-- Distributed tests are excluded by default — run them separately: `mix test --only distributed`
+- Distributed tests are excluded by default — run them separately: `bin/test --only distributed`
+- **The distributed suite has ONE deterministic pre-existing failure as of
+  2026-11-06 (`6ca1189`)**, so a clean default run tells you nothing about it:
+  `OrcaHubWeb.SessionLive.IndexDistributedTest "resolves Cluster.node_name/1
+  once per distinct runner_node, not once per session"`, asserting
+  `count_node_name_calls() == distinct_runner_nodes` and getting 7 vs 6. Fails
+  2/2 in isolation, so not a flake. NOT root-caused, and deliberately not
+  "fixed" by adjusting the number — it is a real N+1 guard and a wrong
+  expectation would quietly disable it. What is established: the assertion
+  models only distinct `runner_node` values, while `index.html.heex` also
+  calls `Cluster.node_name/1` on `session.original_node` for "Moved from"
+  tooltips (lines 247, 359) and on each entry of a node list (line 421). The
+  shared dev DB currently holds 109 sessions with a non-nil `original_node`
+  across 6 distinct values, so that second path is live data, not theoretical.
+  Whoever picks this up should decide what the expectation SHOULD be
+  (runner_nodes, or runner_nodes plus distinct rendered original_nodes) rather
+  than tuning the constant.
 - Repro tests are excluded by default too. A defect issue ships with a test that FAILS in the current unfixed state — executable proof the defect is real, and a free regression test once fixed. Tag it `@tag :repro`, start the test name with the issue key (e.g. `test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA"`), and put it in the file where it will permanently live — not a quarantine dir. Run them on demand with `mix test --only repro`; they are EXPECTED to be red, that is the point, so never add one to the flake list.
 - **The fixing commit removes the `@tag :repro` line in the same commit as the fix**, silently converting the repro into a normal regression test. A `:repro` tag left on a fixed defect means the test stops running.
 - Newly observed 2026-10-30 (one failure in two full runs at `02e0115`):
@@ -397,8 +413,15 @@ Prove it from a pristine tree with its own empty `deps/`/`_build/`:
 ```
 rm -rf /tmp/prod-proof && mkdir -p /tmp/prod-proof
 git archive HEAD | tar -x -C /tmp/prod-proof
-cd /tmp/prod-proof && MIX_ENV=prod mix deps.get && MIX_ENV=prod mix compile
+cd /tmp/prod-proof && MIX_ENV=prod mix deps.get --only prod && MIX_ENV=prod mix compile
 ```
+
+**`--only prod` matters and was missing from this recipe until 2026-11-06.**
+Plain `mix deps.get` ignores the env and fetches everything, so the proof was
+resolving a superset of what the build does — the Dockerfile runs
+`mix deps.get --only prod` (line 76). With `--only prod` nothing test-only is
+fetched (no lazy_html, fine, credo, dialyxir), which is both a stricter
+resolution and a quick way to confirm a dep really is test-scoped.
 
 `git archive` (not a copy) keeps the shared worktree's `deps/` untouched, so
 this can't disturb sibling sessions. If that passes but the build still fails,
@@ -473,6 +496,17 @@ yet". We were already on 1.10.2, so taking 1.11.0 bought hardening and bug
 fixes, not CVE coverage — and its real risk profile was a long list of NEW
 strictness rejections. Read a minor's changelog for what it ADDS beyond the
 patch you are on, rather than assuming the higher number is the safer one.
+
+**cowlib gained a SECOND unfixable HIGH on 2026-11-06**:
+EEF-CVE-2026-113431, unbounded decoded HTTP/2 header-list size in
+`cow_http2_machine` (HPACK amplification). cowlib 2.21.0 is the newest on hex
+and carries it. Verified via `api.osv.dev/v1/vulns/EEF-CVE-2026-113431`: the
+cowlib range has an `introduced: 2.7.0` event and NO `fixed` version — only a
+git-commit fix on the source repo. CVE-2026-43966 has the same shape
+(`introduced: 2.9.0`, commit-only fix). So two of the three remaining audit
+lines are unclearable by upgrading, and will keep showing up every week.
+It is HTTP/2 *client* code reached only through gun -> nostrum, so the hostile
+party would have to be Discord's own API.
 
 **Some audit lines cannot be cleared by upgrading (2026-11-05).** After
 gun 2.7.0/cowlib 2.21.0 (the latest), `hex.audit` still flags both for
