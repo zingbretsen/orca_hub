@@ -200,6 +200,13 @@ Four invariants make this safe to ignore from the persistence side:
 - **Best effort.** A backend that cannot stream emits nothing rather than
   faking deltas out of a completed message.
 
+Two `system` subtypes in the normal event stream are broadcast-only in the same
+way, although the diagrams above show every event persisted: Claude's
+`thinking_tokens` progress tick (about once a second while a turn runs; not
+persisted since 2026-11-05, see `.context/data-model.md`) and pi's
+`queue_update` (its steering/follow-up queue, held in a transient assign by
+`SessionLive.Show`). Both still reach `session:<id>` subscribers live.
+
 ## Fork Spawns (pi)
 
 A spawn carrying `fork_from_parent` (v1: pi only) does NOT send its first

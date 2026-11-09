@@ -459,8 +459,9 @@ graph TB
   `group_alive?/1` count zombies as gone, because in a k3s pod the BEAM is
   PID 1 and never reaps orphans. Callers: `JobWatcher` (group cancel),
   `ProcessIsolation.Marker` (env-marker reap), `SessionRunner`'s one-shot
-  SIGINT, and `screenshot_artifact`'s timeout kill. Trigger setup scripts
-  already used the builtin and are unchanged.
+  SIGINT, `TerminalRunner` (SIGKILL to `script`'s process group on every
+  stop, `.context/terminals.md`), and `screenshot_artifact`'s timeout kill.
+  Trigger setup scripts already used the builtin and are unchanged.
 - **Voice mode** (`lib/orca_hub_web/channels/voice_channel.ex`,
   `lib/orca_hub/voice/{session,asr,intent,prompt,cleanup,dictation}.ex`,
   `lib/orca_hub/asr_config.ex`, `lib/orca_hub_web/live/voice_bar_live.ex`,
@@ -608,7 +609,24 @@ graph TB
   hub. For the same reason, `SessionLive.Show` keeps hidden events
   (`MessageComponents.hidden_message?/1`: `thinking_tokens`,
   `pi_ui_request`, `pi_plan_mode`) out of `@messages`, so the per-second
-  thinking tick does not re-render the feed.
+  thinking tick does not re-render the feed. `SessionRunner` now only
+  broadcasts that tick and never persists it (see
+  `.context/message-flow.md`); older rows are removed by the hub-only
+  `Sessions.purge_thinking_tokens_events/1` (`.context/data-model.md`).
+- **Lazy JS bundles** (`assets/js/lazy_assets.js`, `assets/js/lazy/`, the
+  `orca_hub_lazy` esbuild profile in `config/config.exs`): xterm (+ its
+  stylesheet) and the vendored mermaid renderer are NOT in `app.js`, which
+  every page loads. They build as ESM with `--splitting` into
+  `priv/static/assets/js/lazy/` (`mix assets.build`/`assets.deploy` run both
+  profiles; dev has an `esbuild_lazy` watcher). `root.html.heex` publishes
+  each entry's URL in an `<meta name="orca-lazy:<name>">` tag in `<head>`
+  (digested in prod, and outside every LiveView, so it survives live
+  navigation), and `lazyLoader()` `import()`s it on first use: the Terminal
+  hook on mount, `mermaid_blocks.js` when the first `language-mermaid` code
+  block appears (a `MutationObserver` that inspects only added nodes). esbuild
+  content-hashes the chunks, so `endpoint.ex` serves
+  `/assets/js/lazy/chunks` with `max-age=31536000, immutable`. A new heavy,
+  page-specific dependency belongs in this profile, not in `app.js`.
 - **Inbound email** (`lib/orca_hub/email_inbox/`, hub only): one
   `EmailInbox.Poller` per enabled inbox IMAP-polls for new mail;
   `EmailInbox.Security` authenticates the sender (`Authentication-Results`,

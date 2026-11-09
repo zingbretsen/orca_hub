@@ -202,8 +202,8 @@ scheduled?" is answerable from the log rather than by inference.
 ### Key Modules
 
 - **`OrcaHub.Mode`**: Returns `:hub` or `:agent` based on `ORCA_MODE` env var (default: `:hub`). `hub_node/0` returns self on hub, discovers hub via `:erpc` on agent.
-- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 280 delegating functions.
-- **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`.
+- **`OrcaHub.HubRPC`**: Transparent proxy — calls locally on hub, forwards via `:erpc.call/5` on agent. Wraps every context that touches the DB (Sessions, Projects, Issues, Triggers, Terminals, Jobs, Artifacts, Skills, ApiTokens, AlertSubscriptions, …) — roughly 300 delegating functions.
+- **`OrcaHub.Cluster`**: Routing layer used by LiveViews and other callers. Queries go through HubRPC (single DB), actions route to the correct runner node via `rpc/5`. `node_name/1` (the display name every list page renders per row) never erpcs a node outside `Node.list/0`: a disconnected node gets its hostname instead, because an `:erpc` would auto-connect and stall about 3 s per call on a ghost node. A connected node's name is cached in `Backend.Cache`.
 
 ### Node Routing
 

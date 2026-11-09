@@ -264,6 +264,12 @@ The hook reports its size on every (re)join and after a restart, debounced
 
 ## Browser hook (`assets/js/terminal_hook.js`)
 
+- **xterm is not in `app.js`.** It and its stylesheet are the lazily loaded
+  `terminal-js`/`terminal-css` bundle (`assets/js/lazy/terminal.js`, the
+  `orca_hub_lazy` esbuild profile; see "Lazy JS bundles" in
+  `.context/architecture.md`). The first hook to mount on a page fetches
+  both in parallel and awaits the CSS too, because xterm measures its cells
+  when it opens.
 - **Input is UTF-8**: `TextEncoder` then base64. `btoa()` alone sent a typed
   "é" as one non-UTF-8 byte and threw past U+00FF.
 - **Only a laid-out xterm sends input or a size.** The session page mounts
