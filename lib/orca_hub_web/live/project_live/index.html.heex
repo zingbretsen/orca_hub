@@ -33,121 +33,117 @@
   </div>
 </div>
 
-<.table
-  id="projects"
-  rows={@projects}
-  row_click={
-    MapSet.size(@selected_projects) == 0 &&
-      fn project -> JS.navigate(~p"/projects/#{project.id}") end
-  }
->
-  <:col :let={project} label="" class="w-8">
-    <input
-      type="checkbox"
-      class="checkbox checkbox-sm"
-      checked={MapSet.member?(@selected_projects, project.id)}
-      phx-click="toggle_project"
-      phx-value-id={project.id}
-    />
-  </:col>
-  <:col :let={project} label="Name">
-    <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
-      {project.name}
-    </.link>
-    <span
-      :if={@clustered && Map.get(@node_map, project.id)}
-      class="badge badge-sm badge-outline opacity-60 ml-1"
-    >
-      {OrcaHub.Cluster.node_name(Map.get(@node_map, project.id))}
-    </span>
-  </:col>
-  <:col :let={project} label="Directory">
-    <span class="font-mono text-sm">{project.directory}</span>
-  </:col>
-  <:col :let={project} label="Git">
-    <% status = Map.get(@git_statuses, project.id) %>
-    <div class="flex flex-wrap gap-1">
-      <span :if={is_nil(status)} class="text-base-content/30">--</span>
-      <span :if={status == :loading} class="loading loading-spinner loading-xs"></span>
-      <span :if={status == :syncing} class="loading loading-spinner loading-xs"></span>
-      <span
-        :if={is_map(status) && status.error}
-        class="badge badge-error badge-sm"
-        title={status.error}
+<div id="projects">
+  <.grouped_index
+    id="projects"
+    groups={@grouped_projects}
+    row_click={
+      MapSet.size(@selected_projects) == 0 &&
+        fn project -> JS.navigate(~p"/projects/#{project.id}") end
+    }
+  >
+    <:col :let={project} label="" class="w-8">
+      <input
+        type="checkbox"
+        class="checkbox checkbox-sm"
+        checked={MapSet.member?(@selected_projects, project.id)}
+        phx-click="toggle_project"
+        phx-value-id={project.id}
+      />
+    </:col>
+    <:col :let={project} label="Name">
+      <.link navigate={~p"/projects/#{project.id}"} class="link link-hover">
+        {project.name}
+      </.link>
+    </:col>
+    <:col :let={project} label="Directory">
+      <span class="font-mono text-sm">{project.directory}</span>
+    </:col>
+    <:col :let={project} label="Git">
+      <% status = Map.get(@git_statuses, project.id) %>
+      <div class="flex flex-wrap gap-1">
+        <span :if={is_nil(status)} class="text-base-content/30">--</span>
+        <span :if={status == :loading} class="loading loading-spinner loading-xs"></span>
+        <span :if={status == :syncing} class="loading loading-spinner loading-xs"></span>
+        <span
+          :if={is_map(status) && status.error}
+          class="badge badge-error badge-sm"
+          title={status.error}
+        >
+          error
+        </span>
+        <span :if={is_map(status) && status.conflicts} class="badge badge-error badge-sm">
+          conflicts
+        </span>
+        <span
+          :if={is_map(status) && !status.error && !status.conflicts && !status.clean}
+          class="badge badge-warning badge-sm"
+        >
+          dirty
+        </span>
+        <span :if={is_map(status) && status.behind > 0} class="badge badge-info badge-sm">
+          {status.behind} behind
+        </span>
+        <span :if={is_map(status) && status.ahead > 0} class="badge badge-info badge-sm">
+          {status.ahead} ahead
+        </span>
+        <span
+          :if={
+            is_map(status) && !status.error && !status.conflicts && status.clean &&
+              status.ahead == 0 && status.behind == 0
+          }
+          class="badge badge-success badge-sm"
+        >
+          clean
+        </span>
+      </div>
+    </:col>
+    <:action :let={project}>
+      <% syncing = Map.get(@git_statuses, project.id) == :syncing %>
+      <div class="dropdown dropdown-end">
+        <button tabindex="0" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
+          Sync
+        </button>
+        <ul
+          tabindex="0"
+          class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36"
+        >
+          <li>
+            <button phx-click={
+              JS.push("git_pull", value: %{id: project.id}) |> JS.focus(to: "#projects")
+            }>
+              Pull
+            </button>
+          </li>
+          <li>
+            <button phx-click={
+              JS.push("git_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
+            }>
+              Push
+            </button>
+          </li>
+          <li>
+            <button phx-click={
+              JS.push("git_pull_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
+            }>
+              Pull & Push
+            </button>
+          </li>
+        </ul>
+      </div>
+    </:action>
+    <:action :let={project}>
+      <button
+        class="btn btn-xs btn-ghost"
+        phx-click="delete"
+        phx-value-id={project.id}
+        data-confirm="Delete this project?"
       >
-        error
-      </span>
-      <span :if={is_map(status) && status.conflicts} class="badge badge-error badge-sm">
-        conflicts
-      </span>
-      <span
-        :if={is_map(status) && !status.error && !status.conflicts && !status.clean}
-        class="badge badge-warning badge-sm"
-      >
-        dirty
-      </span>
-      <span :if={is_map(status) && status.behind > 0} class="badge badge-info badge-sm">
-        {status.behind} behind
-      </span>
-      <span :if={is_map(status) && status.ahead > 0} class="badge badge-info badge-sm">
-        {status.ahead} ahead
-      </span>
-      <span
-        :if={
-          is_map(status) && !status.error && !status.conflicts && status.clean &&
-            status.ahead == 0 && status.behind == 0
-        }
-        class="badge badge-success badge-sm"
-      >
-        clean
-      </span>
-    </div>
-  </:col>
-  <:action :let={project}>
-    <% syncing = Map.get(@git_statuses, project.id) == :syncing %>
-    <div class="dropdown dropdown-end">
-      <button tabindex="0" class={["btn btn-xs btn-ghost", syncing && "btn-disabled"]}>
-        Sync
+        Delete
       </button>
-      <ul
-        tabindex="0"
-        class="dropdown-content z-[1] menu menu-sm p-2 shadow bg-base-100 rounded-box w-36"
-      >
-        <li>
-          <button phx-click={
-            JS.push("git_pull", value: %{id: project.id}) |> JS.focus(to: "#projects")
-          }>
-            Pull
-          </button>
-        </li>
-        <li>
-          <button phx-click={
-            JS.push("git_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
-          }>
-            Push
-          </button>
-        </li>
-        <li>
-          <button phx-click={
-            JS.push("git_pull_push", value: %{id: project.id}) |> JS.focus(to: "#projects")
-          }>
-            Pull & Push
-          </button>
-        </li>
-      </ul>
-    </div>
-  </:action>
-  <:action :let={project}>
-    <button
-      class="btn btn-xs btn-ghost"
-      phx-click="delete"
-      phx-value-id={project.id}
-      data-confirm="Delete this project?"
-    >
-      Delete
-    </button>
-  </:action>
-</.table>
+    </:action>
+  </.grouped_index>
+</div>
 
 <div
   :if={@live_action == :new}

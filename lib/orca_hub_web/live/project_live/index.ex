@@ -11,17 +11,10 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     tagged_projects =
       Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
-    node_map = Cluster.build_node_map(tagged_projects)
-    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-    clustered = Node.list() != []
-
     {:ok,
      socket
-     |> assign(:projects, projects)
+     |> assign_projects(tagged_projects)
      |> assign(
-       tagged_projects: tagged_projects,
-       node_map: node_map,
-       clustered: clustered,
        browsing: false,
        browse_path: nil,
        browse_entries: [],
@@ -101,10 +94,7 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:noreply,
      socket
-     |> assign(
-       projects: Enum.reject(socket.assigns.projects, &(&1.id == id)),
-       tagged_projects: Enum.reject(socket.assigns.tagged_projects, fn {_n, p} -> p.id == id end)
-     )}
+     |> assign_projects(Enum.reject(socket.assigns.tagged_projects, fn {_n, p} -> p.id == id end))}
   end
 
   def handle_event("toggle_project", %{"id" => id}, socket) do
@@ -146,8 +136,6 @@ defmodule OrcaHubWeb.ProjectLive.Index do
       {:ok, _} = HubRPC.delete_project(project)
     end
 
-    projects = Enum.reject(socket.assigns.projects, &MapSet.member?(selected, &1.id))
-
     tagged_projects =
       Enum.reject(socket.assigns.tagged_projects, fn {_node, project} ->
         MapSet.member?(selected, project.id)
@@ -155,11 +143,8 @@ defmodule OrcaHubWeb.ProjectLive.Index do
 
     {:noreply,
      socket
-     |> assign(
-       projects: projects,
-       tagged_projects: tagged_projects,
-       selected_projects: MapSet.new()
-     )
+     |> assign_projects(tagged_projects)
+     |> assign(selected_projects: MapSet.new())
      |> put_flash(:info, "Deleted #{MapSet.size(selected)} project(s)")}
   end
 
@@ -292,21 +277,52 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     end
   end
 
+  # The ONE place the project list is derived. `tagged_projects` is the
+  # source of truth; `node_map` and `grouped_projects` are computed from it
+  # so they cannot drift. Display names are resolved once per distinct node.
+  defp assign_projects(socket, tagged_projects) do
+    node_map = Cluster.build_node_map(tagged_projects)
+    node_names = Cluster.node_names(node_map)
+
+    assign(socket,
+      tagged_projects: tagged_projects,
+      node_map: node_map,
+      grouped_projects: build_groups(tagged_projects, node_names)
+    )
+  end
+
+  defp build_groups(tagged_projects, node_names) do
+    available = Cluster.nodes()
+
+    tagged_projects
+    |> Enum.group_by(fn {n, _p} -> n end, fn {_n, p} -> p end)
+    |> Enum.map(fn {n, rows} ->
+      %{
+        key: group_key(n),
+        label: Map.fetch!(node_names, n),
+        rows: rows,
+        icon: "hero-server-micro",
+        badges: if(n in available, do: [], else: ["offline"]),
+        node: n
+      }
+    end)
+    |> Enum.sort_by(fn g -> {g.node != node(), g.label, Atom.to_string(g.node)} end)
+  end
+
+  # Node names contain "@" and ".", which are unsafe in DOM ids. Base64url is
+  # injective, so two distinct nodes can never share a key.
+  defp group_key(n) do
+    "node-" <> Base.url_encode64(Atom.to_string(n), padding: false)
+  end
+
   def reload_for_node_filter(socket) do
     tagged_projects =
       Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
-    node_map = Cluster.build_node_map(tagged_projects)
-    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
-
     {:noreply,
      socket
-     |> assign(
-       node_map: node_map,
-       tagged_projects: tagged_projects,
-       projects: projects,
-       selected_projects: MapSet.new()
-     )}
+     |> assign_projects(tagged_projects)
+     |> assign(selected_projects: MapSet.new())}
   end
 
   @impl true
@@ -337,19 +353,13 @@ defmodule OrcaHubWeb.ProjectLive.Index do
     flash =
       "Imported #{result.sessions_imported} sessions, skipped #{result.sessions_skipped}, created #{result.projects_created} projects."
 
-    tagged_projects = Cluster.list_projects()
-    node_map = Cluster.build_node_map(tagged_projects)
-    projects = Enum.map(tagged_projects, fn {_node, project} -> project end)
+    tagged_projects =
+      Cluster.list_projects() |> NodeFilter.filter_tagged(socket.assigns.node_filter)
 
     {:noreply,
      socket
-     |> assign(
-       importing: false,
-       node_map: node_map,
-       tagged_projects: tagged_projects,
-       projects: projects,
-       selected_projects: MapSet.new()
-     )
+     |> assign_projects(tagged_projects)
+     |> assign(importing: false, selected_projects: MapSet.new())
      |> put_flash(:info, flash)}
   end
 
