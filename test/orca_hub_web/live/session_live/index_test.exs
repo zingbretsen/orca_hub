@@ -139,6 +139,30 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
     refute html =~ "GPT-5.6 Sol"
   end
 
+  # ORCAHUB3-67: the thinking level select lists the selected backend's own
+  # presets for the typed model, re-scoped on every "validate".
+  test "new-session form offers the backend's thinking level presets for the typed model", %{
+    conn: conn
+  } do
+    {:ok, view, html} = live(conn, ~p"/sessions/new")
+
+    assert html =~ "Thinking level"
+    assert has_element?(view, ~s(select[name="session[thinking_level]"] option[value="xhigh"]))
+    refute has_element?(view, ~s(select[name="session[thinking_level]"] option[value="ultra"]))
+
+    view
+    |> form("form[phx-submit=save]", session: %{"backend" => "codex", "model" => "gpt-6-sol"})
+    |> render_change()
+
+    assert has_element?(view, ~s(select[name="session[thinking_level]"] option[value="ultra"]))
+
+    view
+    |> form("form[phx-submit=save]", session: %{"backend" => "codex", "model" => "gpt-6-luna"})
+    |> render_change()
+
+    refute has_element?(view, ~s(select[name="session[thinking_level]"] option[value="ultra"]))
+  end
+
   # ORCAHUB3-60: `/sessions` marks a session that is blocked on an unanswered
   # question, so a human can spot a stalled worker without opening it. A pi
   # dialog carries its question text in the tooltip. A Claude AskUserQuestion

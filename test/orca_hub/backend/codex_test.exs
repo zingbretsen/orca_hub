@@ -354,6 +354,87 @@ defmodule OrcaHub.Backend.CodexTest do
     end
   end
 
+  # ── thinking level (ORCAHUB3-67) ─────────────────────────────────────
+  # Streaming sends the level as turn/start's `effort` on every turn, since
+  # thread/resume restores a thread's recorded effort and ignores a
+  # `-c model_reasoning_effort` override. One-shot exec takes the -c form.
+
+  describe "thinking level (reasoning effort)" do
+    defp turn_start_params(overrides) do
+      c =
+        ctx(
+          Map.merge(
+            %{
+              backend_state: %{
+                phase: :thread_started,
+                thread_id: "t-effort",
+                next_id: 3,
+                pending_requests: %{},
+                system_prompt_sent: true
+              }
+            },
+            overrides
+          )
+        )
+
+      {iodata, _out} = Backend.encode_user_turn("go", c)
+      decode_write(iodata)["params"]
+    end
+
+    test "thinking_levels/1 is per model: five presets, plus ultra where codex offers it" do
+      five = Enum.map(~w(low medium high xhigh max), &{&1, &1})
+
+      assert Backend.thinking_levels(nil) == five
+      assert Backend.thinking_levels("gpt-6-luna") == five
+      assert Backend.thinking_levels("gpt-6-sol") == five ++ [{"ultra", "ultra"}]
+      # a foreign (Claude) model id means codex's own default model
+      assert Backend.thinking_levels("claude-opus-5-5") == five
+    end
+
+    test "turn/start carries a valid level as `effort`" do
+      assert turn_start_params(%{thinking_level: "high"})["effort"] == "high"
+
+      assert turn_start_params(%{thinking_level: "ultra", model: "gpt-6-sol"})["effort"] ==
+               "ultra"
+    end
+
+    test "turn/start has no `effort` key without a level" do
+      refute Map.has_key?(turn_start_params(%{}), "effort")
+      refute Map.has_key?(turn_start_params(%{thinking_level: nil}), "effort")
+    end
+
+    test "a level the model does not offer, or a foreign preset, is dropped" do
+      # app-server accepts "ultra" for gpt-6-luna without complaint, so the
+      # adapter is the only guard.
+      refute Map.has_key?(
+               turn_start_params(%{thinking_level: "ultra", model: "gpt-6-luna"}),
+               "effort"
+             )
+
+      refute Map.has_key?(turn_start_params(%{thinking_level: "minimal"}), "effort")
+      refute Map.has_key?(turn_start_params(%{thinking_level: "off"}), "effort")
+    end
+
+    test ":one_shot passes a valid level as a model_reasoning_effort -c override" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi", thinking_level: "xhigh"}))
+
+      idx = Enum.find_index(spec.args, &(&1 == ~s(model_reasoning_effort="xhigh")))
+      assert idx
+      assert Enum.at(spec.args, idx - 1) == "-c"
+      assert List.last(spec.args) == "hi"
+    end
+
+    test ":one_shot drops an invalid level" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{prompt: "hi", thinking_level: "minimal"}))
+      refute Enum.any?(spec.args, &String.starts_with?(&1, "model_reasoning_effort"))
+    end
+
+    test ":streaming argv is unchanged by a level (it rides turn/start instead)" do
+      c = ctx(%{thinking_level: "high"})
+      assert Backend.spawn_spec(:streaming, c).args == ["app-server" | mcp_config_args(c)]
+    end
+  end
+
   # ── encode_user_turn/2 — memory injection (agent-memory centralization) ──
   # Rides the SAME first-turn flag as the leading system prompt.
 

@@ -97,7 +97,13 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
     File.mkdir_p!(bin_dir)
     claude_path = Path.join(bin_dir, "claude")
-    File.write!(claude_path, "#!/bin/sh\nexit 0\n")
+    # Read the first stdin line (the runner's warm-up turn) BEFORE exiting.
+    # A bare `exit 0` raced that write: when the stub had already exited, the
+    # runner's Port.command raised badarg, rescue_turn_start/4 persisted a
+    # cli_error message, and a test expecting exactly one message (or a
+    # successful send_message_to_session) failed. Measured 2026-11-12: one
+    # failure in every run of the two "sender attribution" tests, at HEAD too.
+    File.write!(claude_path, "#!/bin/sh\nread -r _line\nexit 0\n")
     File.chmod!(claude_path, 0o755)
 
     original_path = System.get_env("PATH") || ""
@@ -1283,6 +1289,96 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       on_exit(fn -> stop_if_alive(session_id) end)
 
       assert Sessions.get_session!(session_id).model == "opus"
+    end
+  end
+
+  describe "start_session — thinking_level (ORCAHUB3-67)" do
+    test "a codex preset valid for the model lands on the row and in the result", %{state: state} do
+      Application.put_env(:orca_hub, :codex_executable, @codex_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :codex_executable) end)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi",
+            "backend" => "codex",
+            "model" => "gpt-6-sol",
+            "thinking_level" => "ultra",
+            "notify_on_completion" => false
+          },
+          state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Jason.decode!(text)["thinking_level"] == "ultra"
+      assert Sessions.get_session!(session_id).thinking_level == "ultra"
+    end
+
+    test "a preset the model does not offer is rejected with the valid list, no session created",
+         %{state: state} do
+      Application.put_env(:orca_hub, :codex_executable, @codex_stub)
+      on_exit(fn -> Application.delete_env(:orca_hub, :codex_executable) end)
+      before_count = Sessions.list_sessions(:all) |> length()
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{
+            "prompt" => "hi",
+            "backend" => "codex",
+            "model" => "gpt-6-luna",
+            "thinking_level" => "ultra"
+          },
+          state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "Unknown codex thinking_level \"ultra\""
+      assert text =~ "low, medium, high, xhigh, max"
+      assert Sessions.list_sessions(:all) |> length() == before_count
+    end
+
+    test "with no backend arg, the level is checked against the default (claude) presets",
+         %{state: state} do
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "start_session",
+            %{"prompt" => "hi", "thinking_level" => "xhigh", "notify_on_completion" => false},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = session_id_from!(text)
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).thinking_level == "xhigh"
+
+      # "minimal" is a pi preset, not a Claude one.
+      assert %{"isError" => true, "content" => [%{"text" => bad}]} =
+               SessionsTool.call(
+                 "start_session",
+                 %{"prompt" => "hi", "thinking_level" => "minimal"},
+                 state
+               )
+
+      assert bad =~ "Unknown claude thinking_level \"minimal\""
+    end
+
+    test "a non-string thinking_level is rejected", %{state: state} do
+      assert %{"isError" => true, "content" => [%{"text" => text}]} =
+               SessionsTool.call(
+                 "start_session",
+                 %{"prompt" => "hi", "thinking_level" => 3},
+                 state
+               )
+
+      assert text =~ "thinking_level must be a string"
     end
   end
 
@@ -3255,6 +3351,43 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert %{"isError" => true, "content" => [%{"text" => text}]} = result
       assert text =~ "model"
       assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a conflicting thinking_level arg is rejected, no session created", %{
+      pi_state: pi_state
+    } do
+      count_before = Repo.aggregate(Session, :count)
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "thinking_level" => "high"},
+          pi_state
+        )
+
+      assert %{"isError" => true, "content" => [%{"text" => text}]} = result
+      assert text =~ "thinking_level"
+      assert Repo.aggregate(Session, :count) == count_before
+    end
+
+    test "a fork child inherits the caller's thinking_level", %{
+      pi_state: pi_state,
+      pi_caller: pi_caller
+    } do
+      {:ok, _} = Sessions.update_session(pi_caller, %{thinking_level: "low"})
+
+      result =
+        SessionsTool.call(
+          "start_session",
+          %{"prompt" => "hi", "fork_from_parent" => true, "notify_on_completion" => false},
+          pi_state
+        )
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      session_id = Jason.decode!(text)["session_id"]
+      on_exit(fn -> stop_if_alive(session_id) end)
+
+      assert Sessions.get_session!(session_id).thinking_level == "low"
     end
 
     test "a conflicting directory arg is rejected, no session created", %{

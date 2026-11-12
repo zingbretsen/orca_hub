@@ -280,4 +280,40 @@ defmodule OrcaHub.BackendTest do
       assert Backend.models_for("codex", :"nonexistent@nowhere.invalid") == []
     end
   end
+
+  describe "thinking_levels_for/2,3 and valid_thinking_level?/4 (ORCAHUB3-67)" do
+    test "dispatch to the backend's own presets; nil/blank means Claude and the default model" do
+      assert Backend.thinking_levels_for("claude", nil) ==
+               OrcaHub.Backend.Claude.thinking_levels(nil)
+
+      assert Backend.thinking_levels_for(nil, "") == OrcaHub.Backend.Claude.thinking_levels(nil)
+
+      assert Backend.thinking_levels_for(%{backend: "codex"}, "gpt-6-sol") ==
+               OrcaHub.Backend.Codex.thinking_levels("gpt-6-sol")
+    end
+
+    test "the node-scoped form answers through the cache, keyed per model" do
+      OrcaHub.Backend.Cache.invalidate({:thinking_levels_for, "codex", "gpt-6-luna", node()})
+      OrcaHub.Backend.Cache.invalidate({:thinking_levels_for, "codex", "gpt-6-sol", node()})
+
+      luna = Backend.thinking_levels_for("codex", "gpt-6-luna", node())
+      sol = Backend.thinking_levels_for("codex", "gpt-6-sol", node())
+
+      refute {"ultra", "ultra"} in luna
+      assert {"ultra", "ultra"} in sol
+    end
+
+    test "an unreachable node degrades to [] (no picker)" do
+      assert Backend.thinking_levels_for("claude", nil, :"nonexistent@nowhere.invalid") == []
+    end
+
+    test "valid_thinking_level?/4 checks the raw value against that list; nil is always valid" do
+      assert Backend.valid_thinking_level?("claude", nil, "xhigh", node())
+      refute Backend.valid_thinking_level?("claude", nil, "ultra", node())
+      assert Backend.valid_thinking_level?("codex", "gpt-6-sol", "ultra", node())
+      refute Backend.valid_thinking_level?("codex", "gpt-6-luna", "ultra", node())
+      assert Backend.valid_thinking_level?("codex", "gpt-6-luna", nil, node())
+      assert Backend.valid_thinking_level?("claude", nil, "", node())
+    end
+  end
 end

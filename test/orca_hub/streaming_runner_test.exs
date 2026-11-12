@@ -447,6 +447,87 @@ defmodule OrcaHub.StreamingRunnerTest do
 
       Port.close(port)
     end
+
+    # ORCAHUB3-67: the model and the thinking level are baked into the warm
+    # process at spawn (argv / Codex thread/start), so a change must re-bake
+    # it exactly like an /mcp flag. Before this, a model change only set
+    # data.model and a warm port kept running the old model.
+    test "a model change while idle with a warm port evicts it" do
+      port = open_port()
+      data = flag_data(port: port, model: "claude-opus-5-5")
+
+      assert {:keep_state, new_data, actions} =
+               SessionRunner.idle(:cast, {:update_model, "claude-haiku-5-5"}, data)
+
+      assert new_data.port == nil
+      assert new_data.model == "claude-haiku-5-5"
+      assert {:state_timeout, :infinity, :idle_teardown} in actions
+      assert Port.info(port) == nil
+    end
+
+    test "a thinking level change while idle with a warm port evicts it" do
+      port = open_port()
+      data = flag_data(port: port, thinking_level: nil)
+
+      assert {:keep_state, new_data, actions} =
+               SessionRunner.idle(:cast, {:update_thinking_level, "high"}, data)
+
+      assert new_data.port == nil
+      assert new_data.thinking_level == "high"
+      assert {:state_timeout, :infinity, :idle_teardown} in actions
+      assert Port.info(port) == nil
+    end
+
+    test "the same thinking level again does NOT evict the warm port" do
+      port = open_port()
+      data = flag_data(port: port, thinking_level: "high")
+
+      assert {:keep_state, new_data} =
+               SessionRunner.idle(:cast, {:update_thinking_level, "high"}, data)
+
+      assert new_data.port == port
+      assert Port.info(port) != nil
+      Port.close(port)
+    end
+
+    test "a thinking level change while running defers to a pending rebake" do
+      port = open_port()
+      data = flag_data(port: port, thinking_level: "low", pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_thinking_level, nil}, data)
+
+      assert new_data.port == port
+      assert new_data.thinking_level == nil
+      assert new_data.pending_rebake == true
+      assert Port.info(port) != nil
+      Port.close(port)
+    end
+
+    test "a model change while running defers to a pending rebake" do
+      port = open_port()
+      data = flag_data(port: port, model: nil, pending_rebake: false)
+
+      assert {:keep_state, new_data} =
+               SessionRunner.running(:cast, {:update_model, "gpt-6-sol"}, data)
+
+      assert new_data.port == port
+      assert new_data.model == "gpt-6-sol"
+      assert new_data.pending_rebake == true
+      Port.close(port)
+    end
+
+    test "ready and error runners store a thinking level change" do
+      assert {:keep_state, %{thinking_level: "max"}} =
+               SessionRunner.ready(:cast, {:update_thinking_level, "max"}, flag_data([]))
+
+      port = open_port()
+
+      assert {:keep_state, %{thinking_level: "max", port: nil}, _actions} =
+               SessionRunner.error(:cast, {:update_thinking_level, "max"}, flag_data(port: port))
+
+      assert Port.info(port) == nil
+    end
   end
 
   describe "stdin framing" do

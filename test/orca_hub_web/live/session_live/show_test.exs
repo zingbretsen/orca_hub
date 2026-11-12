@@ -888,6 +888,141 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
 
       assert Sessions.get_session!(session.id).backend == "claude"
     end
+
+    test "switching also drops the thinking level", %{conn: conn, claude_session: session} do
+      {:ok, _} = Sessions.update_session(session, %{thinking_level: "xhigh"})
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      view
+      |> element(
+        "#sidebar-agent-picker button[phx-click='set_backend'][phx-value-backend='codex']"
+      )
+      |> render_click()
+
+      assert Sessions.get_session!(session.id).thinking_level == nil
+    end
+  end
+
+  describe "thinking level picker (ORCAHUB3-67)" do
+    @level_button "button[phx-click='set_thinking_level']"
+
+    test "a Claude session offers Claude's own presets in the header and the sidebar", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert html =~ "Thinking level"
+
+      for level <- ~w(low medium high xhigh max) do
+        assert has_element?(view, "#{@level_button}[phx-value-thinking_level='#{level}']")
+
+        assert has_element?(
+                 view,
+                 "#sidebar-agent-picker #{@level_button}[phx-value-thinking_level='#{level}']"
+               )
+      end
+
+      # Codex-only and pi-only presets are not offered.
+      refute has_element?(view, "#{@level_button}[phx-value-thinking_level='ultra']")
+      refute has_element?(view, "#{@level_button}[phx-value-thinking_level='minimal']")
+    end
+
+    test "picking a level persists it and shows it in the picker label; Default clears it", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html =
+        view
+        |> element("#sidebar-agent-picker #{@level_button}[phx-value-thinking_level='xhigh']")
+        |> render_click()
+
+      assert Sessions.get_session!(session.id).thinking_level == "xhigh"
+      assert html =~ "Claude · default · xhigh"
+
+      view
+      |> element("#sidebar-agent-picker #{@level_button}[phx-value-thinking_level='']")
+      |> render_click()
+
+      assert Sessions.get_session!(session.id).thinking_level == nil
+    end
+
+    test "a level the backend does not offer is refused, not persisted", %{
+      conn: conn,
+      claude_session: session
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      html = render_hook(view, "set_thinking_level", %{"thinking_level" => "ultra"})
+
+      assert html =~ "is not offered for this model"
+      assert Sessions.get_session!(session.id).thinking_level == nil
+    end
+
+    test "a Codex session's list follows the model, and a model change clears a level it lacks",
+         %{conn: conn, codex_session: session} do
+      {:ok, _} = Sessions.update_session(session, %{model: "gpt-6-sol", thinking_level: "ultra"})
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{session.id}")
+
+      assert has_element?(view, "#{@level_button}[phx-value-thinking_level='ultra']")
+
+      # gpt-5.6-sol also offers ultra: the level survives the switch.
+      render_hook(view, "set_model", %{"model" => "gpt-5.6-sol"})
+      assert Sessions.get_session!(session.id).thinking_level == "ultra"
+
+      # gpt-6-luna does not: the level is cleared with the switch.
+      render_hook(view, "set_model", %{"model" => "gpt-6-luna"})
+      updated = Sessions.get_session!(session.id)
+      assert updated.model == "gpt-6-luna"
+      assert updated.thinking_level == nil
+      refute has_element?(view, "#{@level_button}[phx-value-thinking_level='ultra']")
+    end
+
+    test "a pi model whose catalog row says thinking: no gets no picker", %{
+      conn: conn,
+      pi_session: session
+    } do
+      stub = Path.join(System.tmp_dir!(), "pi_stub_#{System.unique_integer([:positive])}")
+
+      File.write!(stub, """
+      #!/bin/sh
+      if [ "$1" = "--list-models" ]; then
+        cat <<'EOF'
+      provider  model        context  max-out  thinking  images
+      gw        thinker-1    131.1K   16.4K    yes       no
+      gw        plain-coder  262.1K   16.4K    no        no
+      EOF
+        exit 0
+      fi
+      exit 1
+      """)
+
+      File.chmod!(stub, 0o755)
+      previous = Application.get_env(:orca_hub, :pi_executable)
+      Application.put_env(:orca_hub, :pi_executable, stub)
+      OrcaHub.Backend.Cache.clear()
+
+      on_exit(fn ->
+        File.rm(stub)
+
+        if previous,
+          do: Application.put_env(:orca_hub, :pi_executable, previous),
+          else: Application.delete_env(:orca_hub, :pi_executable)
+
+        OrcaHub.Backend.Cache.clear()
+      end)
+
+      {:ok, _} = Sessions.update_session(session, %{model: "gw/plain-coder"})
+      {:ok, view, html} = live(conn, ~p"/sessions/#{session.id}")
+
+      refute html =~ "Thinking level"
+      refute has_element?(view, @level_button)
+
+      render_hook(view, "set_model", %{"model" => "gw/thinker-1"})
+      assert has_element?(view, "#{@level_button}[phx-value-thinking_level='minimal']")
+    end
   end
 
   describe "Conversation/Tree view toggle" do

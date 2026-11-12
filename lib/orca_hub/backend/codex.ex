@@ -100,6 +100,44 @@ defmodule OrcaHub.Backend.Codex do
     ]
   end
 
+  # ── Thinking level (ORCAHUB3-67) ─────────────────────────────────────
+  # Codex calls it reasoning effort, and the presets depend on the model.
+  # Verified 2026-11-12 against codex-cli 0.167.0's app-server `model/list`
+  # (`supportedReasoningEfforts` per model): every listed model offers
+  # low/medium/high/xhigh/max, and the models below also offer `ultra`.
+  # app-server does NOT reject an effort the model does not advertise
+  # (`thread/start` with `ultra` on gpt-6-luna answered "ultra"), so the
+  # picker must not offer it. A model not listed here (nil = codex's own
+  # configured default, or a free-text id) gets the common five.
+  #
+  # Wire: streaming sends `effort` on EVERY `turn/start` (the protocol's
+  # "this turn and subsequent turns" override). `-c model_reasoning_effort`
+  # is not enough there: `thread/resume` restores the thread's recorded
+  # effort and ignores that override (verified). One-shot `codex exec` has
+  # no thread to resume, so it takes the `-c` override.
+  @effort_levels ~w(low medium high xhigh max)
+  @ultra_models ~w(gpt-6.1-sol gpt-6.1-terra gpt-6-astra gpt-6-sol gpt-5.6-sol gpt-5.6-terra)
+
+  @impl true
+  def thinking_levels(model) do
+    levels =
+      if codex_model(model) in @ultra_models,
+        do: @effort_levels ++ ["ultra"],
+        else: @effort_levels
+
+    Enum.map(levels, &{&1, &1})
+  end
+
+  # The stored level, or nil when it is not one of this model's presets (a
+  # Claude/pi level left over from a backend switch, or `ultra` on a model
+  # without it).
+  defp codex_effort(ctx) do
+    level = ctx[:thinking_level]
+
+    if is_binary(level) and Enum.any?(thinking_levels(ctx[:model]), &(elem(&1, 0) == level)),
+      do: level
+  end
+
   # ── Spawn ────────────────────────────────────────────────────────────
 
   @impl true
@@ -120,6 +158,7 @@ defmodule OrcaHub.Backend.Codex do
       ["exec", "--json", "--cd", ctx.directory, "--dangerously-bypass-approvals-and-sandbox"]
       |> Kernel.++(mcp_config_args(ctx))
       |> maybe_add_model_arg(ctx[:model])
+      |> maybe_add_effort_arg(codex_effort(ctx))
       |> Kernel.++([prompt])
 
     %{
@@ -153,6 +192,11 @@ defmodule OrcaHub.Backend.Codex do
       m -> args ++ ["-m", m]
     end
   end
+
+  defp maybe_add_effort_arg(args, nil), do: args
+
+  defp maybe_add_effort_arg(args, effort),
+    do: args ++ ["-c", "model_reasoning_effort=#{inspect(effort)}"]
 
   # No `CODEX_HOME` override — the child inherits the real `~/.codex` home (or
   # whatever `CODEX_HOME` the operator already has set in the node's own env),
@@ -469,6 +513,9 @@ defmodule OrcaHub.Backend.Codex do
     end
   end
 
+  defp maybe_put_effort_param(params, nil), do: params
+  defp maybe_put_effort_param(params, effort), do: Map.put(params, "effort", effort)
+
   defp after_thread_started(result, ctx) do
     thread_id = get_in(result, ["thread", "id"])
 
@@ -516,14 +563,11 @@ defmodule OrcaHub.Backend.Codex do
     {id, bs} = next_id(bs)
     {text, bs} = with_system_prefix(ctx, bs, prompt)
 
-    req = %{
-      "id" => id,
-      "method" => "turn/start",
-      "params" => %{
-        "threadId" => thread_id,
-        "input" => [%{"type" => "text", "text" => text}]
-      }
-    }
+    params =
+      %{"threadId" => thread_id, "input" => [%{"type" => "text", "text" => text}]}
+      |> maybe_put_effort_param(codex_effort(ctx))
+
+    req = %{"id" => id, "method" => "turn/start", "params" => params}
 
     bs = put_pending_request(bs, id, :turn_start)
     {bs, Jason.encode!(req) <> "\n"}

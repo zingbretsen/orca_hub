@@ -215,17 +215,76 @@ defmodule OrcaHub.Backend.Pi do
 
   @impl true
   def models do
+    Enum.map(model_catalog(), &{&1.id, &1.label})
+  end
+
+  # The parsed `pi --list-models` rows (`%{id, label, thinking}`), or [] on
+  # any failure. Shared by `models/0` and `thinking_levels/1`.
+  defp model_catalog do
     exe = Application.get_env(:orca_hub, :pi_executable) || System.find_executable("pi")
 
     with exe when is_binary(exe) <- exe,
          {out, 0} <- System.cmd(exe, ["--list-models"], stderr_to_stdout: true) do
-      parse_model_list(out)
+      parse_model_rows(out)
     else
       _ -> []
     end
   rescue
     _ -> []
   end
+
+  # ── Thinking level (ORCAHUB3-67) ─────────────────────────────────────
+  # `pi --thinking <level>`, verified against pi 1.5.1 (`pi --help`: "off,
+  # minimal, low, medium, high, xhigh, max"; docs/rpc-commands.md has the same
+  # set for the `set_thinking_level` RPC). pi clamps a level the model does
+  # not support (docs/models.md), and on a resumed session the CLI flag wins
+  # over the level the session recorded (createAgentSession in pi's bundle:
+  # `options.thinkingLevel` is checked before the session's
+  # thinking_level_change entry).
+  #
+  # The only per-model fact pi prints is the `thinking` yes/no column of
+  # `pi --list-models`, so a model whose row says `no` gets no picker. A
+  # model pi does not list (nil = pi's default model, or a free-text pattern)
+  # gets the full set and pi clamps it. Which thinking models also take
+  # xhigh/max is not printed anywhere, so those two are offered to every
+  # thinking model and clamped by pi where unsupported.
+
+  @thinking_levels ~w(off minimal low medium high xhigh max)
+
+  # Node-local, so one `pi --list-models` serves every model's lookup.
+  # Invalidated with the model list by OrcaHub.PiConfigSync.
+  @catalog_ttl_ms 300_000
+
+  @impl true
+  def thinking_levels(model) do
+    case model_thinks?(pi_model(model)) do
+      false -> []
+      _ -> Enum.map(@thinking_levels, &{&1, &1})
+    end
+  end
+
+  @doc false
+  def catalog_cache_key(node \\ node()), do: {:pi_model_catalog, node}
+
+  # true/false from the model's catalog row, nil when the model is not in it.
+  defp model_thinks?(nil), do: nil
+
+  defp model_thinks?(model) do
+    # Enum.find + map, not find_value: a `thinking: false` row must come
+    # back as false, and find_value would skip it as falsy.
+    case OrcaHub.Backend.Cache.get_or_run(catalog_cache_key(), @catalog_ttl_ms, &model_catalog/0)
+         |> Enum.find(&(&1.id == model)) do
+      nil -> nil
+      row -> row.thinking
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp maybe_add_thinking_arg(args, level) when level in @thinking_levels,
+    do: args ++ ["--thinking", level]
+
+  defp maybe_add_thinking_arg(args, _level), do: args
 
   # Parses `pi --list-models` output: a header line
   # (`provider   model   context  max-out  thinking  images`) followed by
@@ -252,6 +311,12 @@ defmodule OrcaHub.Backend.Pi do
 
   @doc false
   def parse_model_list(output) do
+    output |> parse_model_rows() |> Enum.map(&{&1.id, &1.label})
+  end
+
+  # Same parse, keeping each row's `thinking` column as a boolean.
+  @doc false
+  def parse_model_rows(output) do
     output
     |> String.split("\n", trim: true)
     |> Enum.flat_map(&parse_model_row/1)
@@ -263,7 +328,13 @@ defmodule OrcaHub.Backend.Pi do
            Regex.run(@model_row, line, capture: :all_but_first),
          true <- Regex.match?(@token_count, context) and Regex.match?(@token_count, max_out),
          true <- flag_cell?(thinking) and flag_cell?(images) do
-      [{"#{provider}/#{model}", "#{Path.basename(model)} (#{provider})"}]
+      [
+        %{
+          id: "#{provider}/#{model}",
+          label: "#{Path.basename(model)} (#{provider})",
+          thinking: String.downcase(thinking) in ~w(yes true y)
+        }
+      ]
     else
       _ -> []
     end
@@ -381,6 +452,7 @@ defmodule OrcaHub.Backend.Pi do
   defp common_args(ctx) do
     []
     |> maybe_add_model_arg(ctx[:model])
+    |> maybe_add_thinking_arg(ctx[:thinking_level])
     |> Kernel.++(["--session-dir", pi_session_dir(ctx)])
     |> maybe_add_fork_or_resume_arg(ctx)
     |> Kernel.++(["--append-system-prompt", system_prompt(ctx)])

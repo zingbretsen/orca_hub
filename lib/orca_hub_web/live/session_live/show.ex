@@ -1155,6 +1155,16 @@ defmodule OrcaHubWeb.SessionLive.Show do
   def context_meter_color(pct) when pct >= 60, do: "progress-warning"
   def context_meter_color(_pct), do: "progress-primary"
 
+  # Label of the header's (and SessionLive.Sidebar's) backend + model +
+  # thinking-level picker, e.g. "Claude · claude-opus-5-5 · high". The level
+  # part is left out when the session uses the backend's default.
+  @doc false
+  def agent_label(session) do
+    [String.capitalize(session.backend || "claude"), session.model || "default"]
+    |> Kernel.++(List.wrap(session.thinking_level))
+    |> Enum.join(" · ")
+  end
+
   # -- Parentage helpers (ORCAHUB3-50) --
 
   defp parent_label(nil, id), do: "session #{String.slice(id, 0, 8)}"
@@ -1662,15 +1672,47 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   def handle_event("set_model", %{"model" => model}, socket) do
     session = socket.assigns.session
+    node = socket.assigns.session_node
     model = if model == "", do: nil, else: model
 
-    case Sessions.update_session(session, %{model: model}) do
+    # A thinking level the new model does not offer is cleared with the
+    # switch (ORCAHUB3-67), so the picker never shows a level that the
+    # adapter would silently drop at spawn.
+    level =
+      if Backend.valid_thinking_level?(session.backend, model, session.thinking_level, node),
+        do: session.thinking_level
+
+    case Sessions.update_session(session, %{model: model, thinking_level: level}) do
       {:ok, updated_session} ->
-        Cluster.update_model(socket.assigns.session_node, session.id, model)
+        Cluster.update_model(node, session.id, model)
+
+        if level != session.thinking_level,
+          do: Cluster.update_thinking_level(node, session.id, level)
+
         {:noreply, assign(socket, :session, updated_session)}
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Failed to update model")}
+    end
+  end
+
+  def handle_event("set_thinking_level", %{"thinking_level" => level}, socket) do
+    session = socket.assigns.session
+    node = socket.assigns.session_node
+    level = if level == "", do: nil, else: level
+
+    if Backend.valid_thinking_level?(session.backend, session.model, level, node) do
+      case Sessions.update_session(session, %{thinking_level: level}) do
+        {:ok, updated_session} ->
+          Cluster.update_thinking_level(node, session.id, level)
+          {:noreply, assign(socket, :session, updated_session)}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to update thinking level")}
+      end
+    else
+      {:noreply,
+       put_flash(socket, :error, "Thinking level #{inspect(level)} is not offered for this model")}
     end
   end
 
@@ -1688,9 +1730,9 @@ defmodule OrcaHubWeb.SessionLive.Show do
       true ->
         # Ask the runner first: it refuses mid-turn (the in-flight CLI process
         # belongs to the old backend), and only after it has torn down the old
-        # warm process do we persist. The native resume id and model are
-        # dropped with it — neither carries across backends — so the new agent
-        # starts a fresh conversation; the message history stays in the UI.
+        # warm process do we persist. The native resume id, model and thinking
+        # level are dropped with it — none carries across backends — so the new
+        # agent starts a fresh conversation; the message history stays in the UI.
         case Cluster.update_backend(socket.assigns.session_node, session.id, backend) do
           {:error, :busy} ->
             {:noreply, put_flash(socket, :error, "Can't switch backend while a turn is running")}
@@ -1699,7 +1741,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
             case Sessions.update_session(session, %{
                    backend: backend,
                    claude_session_id: nil,
-                   model: nil
+                   model: nil,
+                   thinking_level: nil
                  }) do
               {:ok, updated_session} ->
                 {:noreply,

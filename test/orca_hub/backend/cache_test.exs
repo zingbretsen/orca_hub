@@ -35,4 +35,18 @@ defmodule OrcaHub.Backend.CacheTest do
     Cache.invalidate(k)
     assert Cache.get_or_run(k, 60_000, fn -> :fresh end) == :fresh
   end
+
+  test "invalidate_match/1 drops every entry matching a pattern, and only those" do
+    tag = System.unique_integer([:positive])
+    Cache.get_or_run({:match_test, tag, "a"}, 60_000, fn -> :stale end)
+    Cache.get_or_run({:match_test, tag, "b"}, 60_000, fn -> :stale end)
+    other = {:match_test, tag + 1, "a"}
+    Cache.get_or_run(other, 60_000, fn -> :kept end)
+
+    Cache.invalidate_match({:match_test, tag, :_})
+
+    assert Cache.peek({:match_test, tag, "a"}) == :miss
+    assert Cache.peek({:match_test, tag, "b"}) == :miss
+    assert Cache.peek(other) == {:ok, :kept}
+  end
 end

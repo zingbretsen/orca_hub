@@ -186,8 +186,25 @@ defmodule OrcaHub.SessionRunner do
     GenStatem.call(via(session_id), :evict_warm)
   end
 
+  @doc """
+  Apply a change to this session's model. Every backend bakes the model into
+  the warm process at spawn (Claude/pi argv, Codex `thread/start`), so —
+  like the `/mcp` flags below — an actual change evicts the warm port now
+  when no turn is in flight, or marks a `pending_rebake` for the end of the
+  running turn. The caller has persisted the column already.
+  """
   def update_model(session_id, model) do
     GenStatem.cast(via(session_id), {:update_model, model})
+  end
+
+  @doc """
+  Apply a change to this session's thinking level (ORCAHUB3-67). Same
+  rebake path as `update_model/2`: the level rides the spawn argv (Claude
+  `--effort`, pi `--thinking`), so it takes effect on the next turn. Codex
+  reads it at every `turn/start` instead; the rebake is harmless there.
+  """
+  def update_thinking_level(session_id, thinking_level) do
+    GenStatem.cast(via(session_id), {:update_thinking_level, thinking_level})
   end
 
   def update_orchestrator(session_id, orchestrator) do
@@ -431,6 +448,9 @@ defmodule OrcaHub.SessionRunner do
       claude_session_id: session.claude_session_id,
       directory: session.directory,
       model: session.model,
+      # ORCAHUB3-67: the backend's raw thinking-level preset (nil = default),
+      # read by each adapter's spawn_spec/2 (Codex: by every turn/start).
+      thinking_level: Map.get(session, :thinking_level),
       orchestrator: session.orchestrator || false,
       code_exec: session.code_exec || false,
       # MCP tool allow/deny policy columns (OrcaHub.ToolPolicy). The runner
@@ -627,7 +647,11 @@ defmodule OrcaHub.SessionRunner do
   def ready({:call, from}, :evict_warm, _data), do: {:keep_state_and_data, [{:reply, from, :ok}]}
   def ready(:cast, :reresolve_engine, data), do: reresolve_no_turn(data)
 
-  def ready(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def ready(:cast, {:update_model, model}, data),
+    do: apply_flag_change_no_turn(data, :model, model)
+
+  def ready(:cast, {:update_thinking_level, level}, data),
+    do: apply_flag_change_no_turn(data, :thinking_level, level)
 
   def ready(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
@@ -756,7 +780,11 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state, process_port_data(raw, data)}
   end
 
-  def idle(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def idle(:cast, {:update_model, model}, data),
+    do: apply_flag_change_no_turn(data, :model, model)
+
+  def idle(:cast, {:update_thinking_level, level}, data),
+    do: apply_flag_change_no_turn(data, :thinking_level, level)
 
   def idle(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
@@ -1033,7 +1061,11 @@ defmodule OrcaHub.SessionRunner do
     end
   end
 
-  def running(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def running(:cast, {:update_model, model}, data),
+    do: apply_flag_change_running(data, :model, model)
+
+  def running(:cast, {:update_thinking_level, level}, data),
+    do: apply_flag_change_running(data, :thinking_level, level)
 
   def running(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_running(data, :orchestrator, orchestrator)
@@ -1124,7 +1156,11 @@ defmodule OrcaHub.SessionRunner do
     {:keep_state, process_port_data(raw, data)}
   end
 
-  def error(:cast, {:update_model, model}, data), do: {:keep_state, %{data | model: model}}
+  def error(:cast, {:update_model, model}, data),
+    do: apply_flag_change_no_turn(data, :model, model)
+
+  def error(:cast, {:update_thinking_level, level}, data),
+    do: apply_flag_change_no_turn(data, :thinking_level, level)
 
   def error(:cast, {:update_orchestrator, orchestrator}, data),
     do: apply_flag_change_no_turn(data, :orchestrator, orchestrator)
@@ -1880,13 +1916,16 @@ defmodule OrcaHub.SessionRunner do
         _ -> :ok
       end
 
-      new_data = %{
-        new_data
-        | backend: new_backend,
-          backend_state: %{},
-          claude_session_id: nil,
-          model: nil
-      }
+      new_data =
+        %{
+          new_data
+          | backend: new_backend,
+            backend_state: %{},
+            claude_session_id: nil,
+            model: nil
+        }
+        # Thinking-level presets are per backend too (ORCAHUB3-67).
+        |> Map.put(:thinking_level, nil)
 
       {:keep_state, new_data, [{:reply, from, :ok}, {:state_timeout, :infinity, :idle_teardown}]}
     end
@@ -1897,6 +1936,8 @@ defmodule OrcaHub.SessionRunner do
   # port-open, so when the value actually CHANGES we evict the warm port now to
   # force a cold re-open (and URL re-bake) on the next turn. A no-op (same value)
   # must NOT tear the port down. Cold runners (port: nil) just store the value.
+  # The model and thinking level (ORCAHUB3-67) ride the same path: both are
+  # baked into the spawn (argv, or Codex's thread/start) the same way.
   defp apply_flag_change_no_turn(data, key, value),
     do: apply_flag_changes_no_turn(data, [{key, value}])
 

@@ -93,6 +93,25 @@ defmodule OrcaHub.Backend.Claude do
     ]
   end
 
+  # ── Thinking level (ORCAHUB3-67) ─────────────────────────────────────
+  # `claude --effort <level>`, verified against Claude Code 2.1.322 (`claude
+  # --help`: "low, medium, high, xhigh, max"). Its stream-json `initialize`
+  # control response lists `supportedEffortLevels` per model, and every model
+  # it offered (Opus 5.5, Fable 5, Sonnet 5.5, Haiku 5.5) supports all five,
+  # so the list does not depend on the model. For a model that offers fewer,
+  # the CLI itself drops to the nearest level it does offer. An unknown value
+  # is NOT rejected by the CLI at startup, so `claude_effort/1` drops it here.
+
+  @effort_levels ~w(low medium high xhigh max)
+
+  @impl true
+  def thinking_levels(_model), do: Enum.map(@effort_levels, &{&1, &1})
+
+  defp claude_effort(ctx) do
+    level = ctx[:thinking_level]
+    if level in @effort_levels, do: level
+  end
+
   # ── Spawn ────────────────────────────────────────────────────────────
   # Verbatim move of SessionRunner.open_port_streaming/1 and open_port/1
   # (pre-refactor). `ctx` is the runner's `data` map; `ctx.prompt` (set by
@@ -111,6 +130,7 @@ defmodule OrcaHub.Backend.Claude do
       ]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
+      |> maybe_put(:effort, claude_effort(ctx))
       |> maybe_put(:system_prompt, system_prompt(ctx))
       |> maybe_put(:tools, tools_for(ctx))
       |> maybe_put_mcp_config(ctx)
@@ -138,6 +158,7 @@ defmodule OrcaHub.Backend.Claude do
       [cwd: ctx.directory, disallowed_tools: @disallowed_tools, include_partial_messages: true]
       |> maybe_put(:session_id, ctx.claude_session_id)
       |> maybe_put(:model, ctx.model)
+      |> maybe_put(:effort, claude_effort(ctx))
       |> maybe_put(:system_prompt, system_prompt(ctx))
       |> maybe_put(:tools, tools_for(ctx))
       |> maybe_put_mcp_config(ctx)

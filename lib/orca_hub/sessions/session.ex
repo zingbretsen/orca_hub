@@ -16,6 +16,11 @@ defmodule OrcaHub.Sessions.Session do
     field :title, :string
     field :status, :string, default: "ready"
     field :model, :string
+    # ORCAHUB3-67: the backend's RAW thinking-level preset (Claude "xhigh",
+    # Codex "high", pi "low", ...), nil = the backend's default. The valid
+    # values come from `OrcaHub.Backend.thinking_levels_for/3`, never from a
+    # normalized scale; each adapter drops a value it does not know at spawn.
+    field :thinking_level, :string
     # Which agent-CLI backend runs this session (backend_abstraction_spec.md
     # §4). "codex" is a valid data-layer value ahead of its Phase 2 adapter;
     # the UI only offers backends from `OrcaHub.Backend.available/0`.
@@ -128,6 +133,7 @@ defmodule OrcaHub.Sessions.Session do
       :title,
       :status,
       :model,
+      :thinking_level,
       :backend,
       :kind,
       :project_id,
@@ -165,6 +171,9 @@ defmodule OrcaHub.Sessions.Session do
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
     |> validate_inclusion(:backend, @backends)
     |> validate_inclusion(:kind, ~w(session memory_extraction))
+    # Shape only: which presets are valid depends on the backend, the model
+    # and (for pi) the node, so callers check the list itself.
+    |> validate_format(:thinking_level, ~r/\A[a-z]{1,32}\z/)
   end
 
   @doc """

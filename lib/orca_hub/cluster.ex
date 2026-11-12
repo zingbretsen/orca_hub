@@ -538,6 +538,9 @@ defmodule OrcaHub.Cluster do
   def update_model(n, session_id, model),
     do: rpc(n, SessionRunner, :update_model, [session_id, model])
 
+  def update_thinking_level(n, session_id, thinking_level),
+    do: rpc(n, SessionRunner, :update_thinking_level, [session_id, thinking_level])
+
   def update_orchestrator(n, session_id, orchestrator),
     do: rpc(n, SessionRunner, :update_orchestrator, [session_id, orchestrator])
 

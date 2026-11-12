@@ -155,7 +155,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       %{
         "name" => "start_session",
         "description" =>
-          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Exception: orchestrator: true is a HANDOFF to a sibling session, not a child spawn — see the orchestrator param. Returns structured JSON: session_id, node, model, backend, directory, already_exists, orchestrator.",
+          "Create a new agent session (Claude by default; optionally codex or pi) in the same project and directory as the calling session, and send it a starting prompt. Use this to delegate subtasks to a parallel session. The new session is automatically linked as your child: when it finishes its turn (goes idle) or errors, you automatically receive a \"[Session lifecycle]\" message — no need to instruct the worker to message you back, and no need to poll with search_sessions/heartbeats just to detect completion. Set notify_on_completion to false to opt out for a true fire-and-forget spawn. Exception: orchestrator: true is a HANDOFF to a sibling session, not a child spawn — see the orchestrator param. Returns structured JSON: session_id, node, model, thinking_level, backend, directory, already_exists, orchestrator.",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -193,6 +193,16 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               "description" =>
                 "Optional backend-specific model id, passed through as free text (no enum) — e.g. a Claude alias like \"opus\", a Codex model id like \"gpt-5.5\", or a pi provider/model string like \"fireworks/accounts/fireworks/models/glm-5\". Omit to use the backend's default model."
             },
+            "thinking_level" => %{
+              "type" => "string",
+              "description" =>
+                "Optional thinking level, as the backend's OWN preset name (no shared scale): " <>
+                  "claude \"low\"/\"medium\"/\"high\"/\"xhigh\"/\"max\"; codex \"low\"/\"medium\"/" <>
+                  "\"high\"/\"xhigh\"/\"max\" (some models also \"ultra\"); pi \"off\"/\"minimal\"/" <>
+                  "\"low\"/\"medium\"/\"high\"/\"xhigh\"/\"max\" (none for a pi model that cannot " <>
+                  "think). A value the backend does not offer for the chosen model is rejected " <>
+                  "with the valid list. Omit to use the backend's default."
+            },
             "notify_on_completion" => %{
               "type" => "boolean",
               "description" =>
@@ -219,10 +229,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                 "pi-backend only. Fork the CALLER's session: the new child starts with a " <>
                   "byte-identical copy of your full conversation context (cheap on a " <>
                   "prompt-cached provider) instead of a blank context. The child INHERITS " <>
-                  "the caller's backend, model, and orchestrator flag — a flag-changing " <>
-                  "fork would render different system-prompt bytes and inherit none of the " <>
+                  "the caller's backend, model, thinking_level, and orchestrator flag — a " <>
+                  "flag-changing fork would render different system-prompt bytes (or, for " <>
+                  "thinking_level, different request parameters) and inherit none of the " <>
                   "cached prefix, defeating the point — and a conflicting backend/model/" <>
-                  "directory/project_id/node argument is REJECTED rather than silently " <>
+                  "thinking_level/directory/project_id/node argument is REJECTED rather than silently " <>
                   "overridden. Otherwise a normal child session. Default: false."
             },
             "tool_allowlist" => %{
@@ -1301,6 +1312,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
          args
          |> Map.put("backend", caller.backend)
          |> Map.put("model", caller.model)
+         |> Map.put("thinking_level", caller.thinking_level)
          |> Map.put("orchestrator", caller.orchestrator)}
       end
     else
@@ -1320,6 +1332,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   defp validate_fork_no_override(args, caller) do
     with :ok <- reject_fork_override(args["backend"], caller.backend, "backend"),
          :ok <- reject_fork_override(args["model"], caller.model, "model"),
+         :ok <-
+           reject_fork_override(args["thinking_level"], caller.thinking_level, "thinking_level"),
          :ok <- reject_fork_override(args["directory"], caller.directory, "directory"),
          :ok <- reject_fork_override(args["orchestrator"], caller.orchestrator, "orchestrator"),
          :ok <- reject_fork_project_id_override(args["project_id"], caller),
@@ -1394,11 +1408,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         error(message)
 
       {:ok, backend} ->
-        case validate_model(args["model"], backend, runner_node) do
+        case validate_model_and_thinking_level(args, backend, runner_node) do
           {:error, message} ->
             error(message)
 
-          {:ok, model} ->
+          {:ok, model, thinking_level} ->
             case resolve_issue_id_arg(args["issue_id"]) do
               {:error, message} ->
                 error(message)
@@ -1419,6 +1433,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                   |> maybe_put_field(:title, args["title"])
                   |> maybe_put_field(:backend, backend)
                   |> maybe_put_field(:model, model)
+                  |> maybe_put_field(:thinking_level, thinking_level)
                   |> maybe_put_field(:orchestrator, args["orchestrator"])
                   |> maybe_put_field(:idempotency_key, idempotency_key)
                   |> maybe_put_field(:issue_id, issue_id)
@@ -1618,6 +1633,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
         args["backend"],
         args["orchestrator"]
       ]
+      # Appended only when given, so every key minted without a thinking
+      # level stays byte-identical to the one older releases mint for the
+      # same call (a replay pair can straddle a rollout).
+      |> Kernel.++(List.wrap(args["thinking_level"]))
       |> Enum.map_join(<<0x1F>>, &to_string(&1 || ""))
 
     "auto:" <> (:crypto.hash(:sha256, material) |> Base.encode16(case: :lower))
@@ -1818,6 +1837,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       session_id: session.id,
       node: Cluster.node_name(session.runner_node || node()),
       model: session.model,
+      thinking_level: session.thinking_level,
       backend: session.backend,
       directory: session.directory,
       already_exists: already_exists,
@@ -1925,6 +1945,63 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   end
 
   defp validate_model(model, _backend, _runner_node), do: {:ok, model}
+
+  defp validate_model_and_thinking_level(args, backend, runner_node) do
+    with {:ok, model} <- validate_model(args["model"], backend, runner_node),
+         {:ok, level} <-
+           validate_thinking_level(args["thinking_level"], args, backend, model, runner_node) do
+      {:ok, model, level}
+    end
+  end
+
+  # ORCAHUB3-67: the level is the backend's RAW preset, so it is checked
+  # against that backend's own list for this model on the target node.
+  # A fork child inherits its parent's level unchecked (prepare_fork_args/2
+  # forced it; the parent's adapter already accepted it, and every adapter
+  # drops an unknown level at spawn anyway).
+  defp validate_thinking_level(level, _args, _backend, _model, _runner_node)
+       when level in [nil, ""],
+       do: {:ok, nil}
+
+  defp validate_thinking_level(level, args, backend, model, runner_node) when is_binary(level) do
+    if fork?(args) do
+      {:ok, level}
+    else
+      backend = backend || node_default_backend(runner_node)
+
+      levels =
+        Enum.map(OrcaHub.Backend.thinking_levels_for(backend, model, runner_node), &elem(&1, 0))
+
+      model_label = model || "(default)"
+
+      cond do
+        level in levels ->
+          {:ok, level}
+
+        levels == [] ->
+          {:error,
+           "thinking_level #{inspect(level)}: the #{backend} backend offers no thinking level " <>
+             "for model #{model_label}. Omit thinking_level."}
+
+        true ->
+          {:error,
+           "Unknown #{backend} thinking_level #{inspect(level)} for model #{model_label}. " <>
+             "Valid levels: #{Enum.join(levels, ", ")}."}
+      end
+    end
+  end
+
+  defp validate_thinking_level(level, _args, _backend, _model, _runner_node),
+    do: {:error, "thinking_level must be a string, got #{inspect(level)}."}
+
+  # With no explicit backend arg, OrcaHub.Sessions.create_session/1 fills in
+  # the node's configured default_backend, so that is the list to check.
+  defp node_default_backend(runner_node) do
+    case HubRPC.get_node_by_name(Atom.to_string(runner_node)) do
+      %{default_backend: backend} when is_binary(backend) and backend != "" -> backend
+      _ -> "claude"
+    end
+  end
 
   # Bare tier aliases the Claude CLI also accepts (e.g. "opus" for the latest
   # Opus snapshot), derived from the full ids rather than hardcoded — strips

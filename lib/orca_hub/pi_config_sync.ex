@@ -167,6 +167,10 @@ defmodule OrcaHub.PiConfigSync do
   @impl true
   def handle_info({:pi_models_changed, node_name}, state) do
     Backend.Cache.invalidate({:models_for, "pi", node_name})
+    # The thinking-level picker reads the same catalog's `thinking` column
+    # (ORCAHUB3-67): the node-local catalog, and every model's cached list.
+    Backend.Cache.invalidate(Backend.Pi.catalog_cache_key(node_name))
+    Backend.Cache.invalidate_match({:thinking_levels_for, "pi", :_, node_name})
     {:noreply, state}
   end
 

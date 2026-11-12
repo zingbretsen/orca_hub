@@ -372,17 +372,19 @@ was. --%>
            (Backend.available_on/1, ETS-cached); switching drops the
            CLI-native resume id — fresh agent conversation, message history
            stays — and is refused mid-turn. The model list is live per
-           backend + node (pi enumerates `pi --list-models`). --%>
+           backend + node (pi enumerates `pi --list-models`). The thinking
+           level section (ORCAHUB3-67) lists the backend's own presets for
+           the current model and is hidden when there are none. --%>
         <div class="dropdown dropdown-end">
           <div
             tabindex="0"
             role="button"
             class="btn btn-ghost btn-sm gap-1"
-            title={"Backend & model: #{String.capitalize(@session.backend || "claude")} · #{@session.model || "default"}"}
+            title={"Backend, model & thinking level: #{OrcaHubWeb.SessionLive.Show.agent_label(@session)}"}
           >
             <.icon name="hero-cpu-chip" class="size-4" />
             <span class="text-xs hidden sm:inline truncate max-w-[10rem] lg:max-w-xs">
-              {String.capitalize(@session.backend || "claude")} · {@session.model || "default"}
+              {OrcaHubWeb.SessionLive.Show.agent_label(@session)}
             </span>
           </div>
           <%!-- Mobile: the header actions wrap, so this button can sit near the
@@ -442,6 +444,36 @@ was. --%>
                 <button type="submit" class="btn btn-xs btn-primary">Set</button>
               </form>
             </li>
+            <%= if OrcaHub.Backend.thinking_levels_for(@session.backend, @session.model, @session_node) != [] do %>
+              <li class="menu-title text-xs uppercase opacity-60 mt-1">Thinking level</li>
+              <li>
+                <button
+                  phx-click="set_thinking_level"
+                  phx-value-thinking_level=""
+                  data-close-dropdown-parent
+                  class={[@session.thinking_level == nil && "active"]}
+                >
+                  Default
+                </button>
+              </li>
+              <li :for={
+                {level_id, label} <-
+                  OrcaHub.Backend.thinking_levels_for(
+                    @session.backend,
+                    @session.model,
+                    @session_node
+                  )
+              }>
+                <button
+                  phx-click="set_thinking_level"
+                  phx-value-thinking_level={level_id}
+                  data-close-dropdown-parent
+                  class={[@session.thinking_level == level_id && "active"]}
+                >
+                  {label}
+                </button>
+              </li>
+            <% end %>
           </ul>
         </div>
         <%!-- Mobile "More actions" opener (desktop uses direct header controls) --%>

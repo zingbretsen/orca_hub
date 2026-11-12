@@ -656,6 +656,45 @@ defmodule OrcaHub.Backend.ClaudeTest do
     end
   end
 
+  # ── thinking level (ORCAHUB3-67) ─────────────────────────────────────
+
+  describe "thinking level (--effort)" do
+    test "thinking_levels/1 lists Claude Code's five effort presets for any model" do
+      expected = Enum.map(~w(low medium high xhigh max), &{&1, &1})
+
+      assert Backend.thinking_levels(nil) == expected
+      assert Backend.thinking_levels("claude-haiku-5-5") == expected
+    end
+
+    test ":streaming passes a valid level as --effort" do
+      spec = Backend.spawn_spec(:streaming, ctx(%{thinking_level: "xhigh"}))
+
+      idx = Enum.find_index(spec.args, &(&1 == "--effort"))
+      assert idx
+      assert Enum.at(spec.args, idx + 1) == "xhigh"
+    end
+
+    test ":one_shot passes a valid level as --effort inside the script command" do
+      spec = Backend.spawn_spec(:one_shot, ctx(%{thinking_level: "low", prompt: "hi"}))
+
+      assert Enum.any?(spec.args, &String.contains?(&1, "'--effort' 'low'"))
+    end
+
+    test "no level means no --effort flag" do
+      refute "--effort" in Backend.spawn_spec(:streaming, ctx()).args
+      refute "--effort" in Backend.spawn_spec(:streaming, ctx(%{thinking_level: nil})).args
+    end
+
+    test "a level that is not a Claude preset is dropped, not passed through" do
+      # "ultra" is a Codex preset and "minimal" a pi one — leftovers of a
+      # backend switch must never reach the Claude CLI, which does not
+      # reject an unknown --effort at startup.
+      for level <- ["ultra", "minimal", "HIGH", ""] do
+        refute "--effort" in Backend.spawn_spec(:streaming, ctx(%{thinking_level: level})).args
+      end
+    end
+  end
+
   # ── spawn_spec/2 — :streaming ────────────────────────────────────────
 
   describe "spawn_spec/2 — :streaming" do

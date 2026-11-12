@@ -915,14 +915,15 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
           <dt class="text-base-content/50">Node</dt>
           <dd title={@session.runner_node}>{@session_node_name}</dd>
         <% end %>
-        <%!-- The header's combined backend + model picker: the backend half
-        only when the node has more than one CLI, and switching it starts a
-        fresh agent conversation. --%>
+        <%!-- The header's combined backend + model + thinking level picker:
+        the backend half only when the node has more than one CLI, and
+        switching it starts a fresh agent conversation; the thinking level
+        half only when the backend offers presets for the current model. --%>
         <dt class="text-base-content/50">Agent</dt>
         <dd>
           <details id="sidebar-agent-picker">
             <summary class="inline-flex items-center gap-0.5 cursor-pointer hover:underline [overflow-wrap:anywhere]">
-              {String.capitalize(@session.backend || "claude")} · {@session.model || "default"}
+              {Show.agent_label(@session)}
               <.icon name="hero-chevron-down-micro" class="size-3 shrink-0" />
             </summary>
             <ul class="menu menu-xs w-full p-1 mt-1 bg-base-200 rounded-box">
@@ -975,6 +976,34 @@ defmodule OrcaHubWeb.SessionLive.Sidebar do
                   <button type="submit" class="btn btn-xs btn-primary">Set</button>
                 </form>
               </li>
+              <%= if Backend.thinking_levels_for(@session.backend, @session.model, @session_node) != [] do %>
+                <li class="menu-title">Thinking level</li>
+                <li>
+                  <button
+                    type="button"
+                    phx-click="set_thinking_level"
+                    phx-value-thinking_level=""
+                    data-close-details
+                    class={[@session.thinking_level == nil && "menu-active"]}
+                  >
+                    Default
+                  </button>
+                </li>
+                <li :for={
+                  {level_id, label} <-
+                    Backend.thinking_levels_for(@session.backend, @session.model, @session_node)
+                }>
+                  <button
+                    type="button"
+                    phx-click="set_thinking_level"
+                    phx-value-thinking_level={level_id}
+                    data-close-details
+                    class={[@session.thinking_level == level_id && "menu-active"]}
+                  >
+                    {label}
+                  </button>
+                </li>
+              <% end %>
             </ul>
           </details>
         </dd>

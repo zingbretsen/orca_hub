@@ -67,6 +67,13 @@ defmodule OrcaHub.Backend.Cache do
   @doc "Drop a cached entry (test helper / manual invalidation)."
   def invalidate(key), do: :ets.delete(@table, key)
 
+  @doc """
+  Drop every entry whose key matches the ETS match pattern `key_pattern`
+  (`:_` is a wildcard), e.g. `{:thinking_levels_for, "pi", :_, node}` for
+  every model's entry at once.
+  """
+  def invalidate_match(key_pattern), do: :ets.match_delete(@table, {key_pattern, :_, :_})
+
   @doc "Drop everything (test helper)."
   def clear, do: :ets.delete_all_objects(@table)
 end

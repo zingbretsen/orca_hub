@@ -471,6 +471,32 @@
           </option>
         </datalist>
       </div>
+      <%!-- Thinking level (ORCAHUB3-67): the selected backend's own presets
+           for the typed model on the target node, re-rendered on every
+           "validate" like the model datalist. Hidden when the backend or
+           model offers none (e.g. a pi model whose catalog row says
+           `thinking: no`). --%>
+      <.input
+        :if={
+          OrcaHub.Backend.thinking_levels_for(
+            selected_backend(@form),
+            @form[:model].value,
+            @selected_target_node
+          ) != []
+        }
+        field={@form[:thinking_level]}
+        type="select"
+        label="Thinking level"
+        prompt="Default"
+        options={
+          OrcaHub.Backend.thinking_levels_for(
+            selected_backend(@form),
+            @form[:model].value,
+            @selected_target_node
+          )
+          |> Enum.map(fn {id, label} -> {label, id} end)
+        }
+      />
       <%!-- Orchestrator mode delegates via MCP tools (mcp__orca__start_session
            etc.) — hidden for a backend without MCP (spec §7's mcp: false
            gating; both current backends have mcp: true, this is wiring for

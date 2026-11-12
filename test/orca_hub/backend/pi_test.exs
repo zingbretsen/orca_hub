@@ -255,6 +255,88 @@ defmodule OrcaHub.Backend.PiTest do
     end
   end
 
+  # ── thinking level (ORCAHUB3-67) ───────────────────────────────────────
+
+  describe "thinking level (--thinking)" do
+    @describetag :tmp_dir
+    @all_levels Enum.map(~w(off minimal low medium high xhigh max), &{&1, &1})
+
+    # A stand-in `pi` whose catalog has one thinking and one non-thinking
+    # model, behind the `:pi_executable` seam.
+    setup %{tmp_dir: tmp_dir} do
+      stub = Path.join(tmp_dir, "pi")
+
+      File.write!(stub, """
+      #!/bin/sh
+      if [ "$1" = "--list-models" ]; then
+        cat <<'EOF'
+      provider  model         context  max-out  thinking  images
+      gw        thinker-1     131.1K   16.4K    yes       no
+      gw        plain-coder   262.1K   16.4K    no        no
+      EOF
+        exit 0
+      fi
+      exit 1
+      """)
+
+      File.chmod!(stub, 0o755)
+      previous = Application.get_env(:orca_hub, :pi_executable)
+      Application.put_env(:orca_hub, :pi_executable, stub)
+      OrcaHub.Backend.Cache.invalidate(Backend.catalog_cache_key())
+
+      on_exit(fn ->
+        OrcaHub.Backend.Cache.invalidate(Backend.catalog_cache_key())
+
+        if previous,
+          do: Application.put_env(:orca_hub, :pi_executable, previous),
+          else: Application.delete_env(:orca_hub, :pi_executable)
+      end)
+
+      :ok
+    end
+
+    test "a model whose catalog row says thinking: yes gets every pi level" do
+      assert Backend.thinking_levels("gw/thinker-1") == @all_levels
+    end
+
+    test "a model whose catalog row says thinking: no gets no picker" do
+      assert Backend.thinking_levels("gw/plain-coder") == []
+    end
+
+    test "pi's default model and a model pi does not list get every level (pi clamps)" do
+      assert Backend.thinking_levels(nil) == @all_levels
+      assert Backend.thinking_levels("glm-5") == @all_levels
+    end
+
+    test "a valid level is passed as --thinking, in both spawn modes" do
+      for mode <- [:streaming, :one_shot] do
+        spec = Backend.spawn_spec(mode, ctx(%{thinking_level: "high", prompt: "hi"}))
+        idx = Enum.find_index(spec.args, &(&1 == "--thinking"))
+        assert idx, "no --thinking in #{mode} args"
+        assert Enum.at(spec.args, idx + 1) == "high"
+      end
+    end
+
+    test "no level, or one that is not a pi preset, means no --thinking" do
+      refute "--thinking" in Backend.spawn_spec(:streaming, ctx()).args
+
+      for level <- ["ultra", "HIGH", ""] do
+        refute "--thinking" in Backend.spawn_spec(:streaming, ctx(%{thinking_level: level})).args
+      end
+    end
+
+    test "parse_model_rows/1 keeps the thinking column" do
+      output = """
+      provider  model  context  max-out  thinking  images
+      gw        a      128K     32.8K    yes       no
+      gw        b      128K     32.8K    no        no
+      """
+
+      assert [%{id: "gw/a", thinking: true}, %{id: "gw/b", thinking: false}] =
+               Backend.parse_model_rows(output)
+    end
+  end
+
   # ── spawn_spec/2 ────────────────────────────────────────────────────────
 
   describe "spawn_spec/2 — :streaming" do

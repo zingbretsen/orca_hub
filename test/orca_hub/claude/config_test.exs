@@ -60,6 +60,14 @@ defmodule OrcaHub.Claude.ConfigTest do
     assert "sonnet" in args
   end
 
+  test "effort adds --effort, and nil omits it" do
+    {args, _} = Config.build_args("hello", effort: "xhigh")
+    assert ["--effort", "xhigh"] == Enum.drop_while(args, &(&1 != "--effort")) |> Enum.take(2)
+
+    {args, _} = Config.build_args("hello", effort: nil)
+    refute "--effort" in args
+  end
+
   test "cwd returns in port_opts not args" do
     {args, port_opts} = Config.build_args("hello", cwd: "/tmp")
     assert port_opts == [cd: ~c"/tmp"]

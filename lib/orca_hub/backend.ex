@@ -244,6 +244,21 @@ defmodule OrcaHub.Backend do
   @callback models() :: [{String.t(), String.t()}]
 
   @doc """
+  OPTIONAL (ORCAHUB3-67). The thinking-level presets this backend offers for
+  `model` (`nil` = the backend's default model), as `{id, label}` pairs. `id`
+  is the RAW value the CLI takes (Claude `--effort`, Codex `effort`, pi
+  `--thinking`) and is what `sessions.thinking_level` stores — there is no
+  normalized cross-backend scale.
+
+  `[]` means "no thinking-level picker" (a backend without the knob, or a
+  model that cannot think). Like `models/0` this may be node-dependent (pi
+  reads its live model catalog), so UI callers go through
+  `thinking_levels_for/3`. Each adapter's `spawn_spec/2` must also DROP a
+  stored level it does not recognize instead of passing it to the CLI.
+  """
+  @callback thinking_levels(model :: String.t() | nil) :: [{String.t(), String.t()}]
+
+  @doc """
   Whether this backend's CLI is actually runnable on THIS node (executable
   resolvable). Drives node-scoped picker filtering via `available_on/1` —
   a backend that isn't installed on a node is hidden from that node's
@@ -328,7 +343,8 @@ defmodule OrcaHub.Backend do
   @optional_callbacks encode_ui_response: 3,
                       encode_toggle_plan_mode: 1,
                       encode_compact: 1,
-                      mcp_enabled?: 1
+                      mcp_enabled?: 1,
+                      thinking_levels: 1
 
   @doc """
   Resolves a backend identifier (the `sessions.backend` DB column value) to
@@ -452,6 +468,62 @@ defmodule OrcaHub.Backend do
   rescue
     _ -> []
   end
+
+  @doc """
+  Thinking-level presets for a session's (or a bare `backend` column
+  value's) backend and `model`, as `{id, label}` pairs, evaluated on THIS
+  node. `[]` when the backend does not implement `thinking_levels/1` or the
+  model offers no level. A blank model means the backend's default model.
+  """
+  @spec thinking_levels_for(term, String.t() | nil) :: [{String.t(), String.t()}]
+  def thinking_levels_for(backend_ref, model) do
+    module = resolve(backend_string(backend_ref))
+
+    if function_exported?(module, :thinking_levels, 1) do
+      module.thinking_levels(blank_to_nil(model))
+    else
+      []
+    end
+  end
+
+  @doc """
+  Like `thinking_levels_for/2` but evaluated on `node` (RPC'd + cached
+  #{div(@models_ttl_ms, 1000)}s, the same lifetime as `models_for/2`), since
+  pi's answer depends on that node's live model catalog. An unreachable node
+  or a raise falls back to `[]`, which hides the picker.
+  """
+  @spec thinking_levels_for(term, String.t() | nil, node | String.t() | nil) ::
+          [{String.t(), String.t()}]
+  def thinking_levels_for(backend_ref, model, node) do
+    backend = backend_string(backend_ref)
+    model = blank_to_nil(model)
+    node = normalize_node(node)
+
+    OrcaHub.Backend.Cache.get_or_run(
+      {:thinking_levels_for, backend, model, node},
+      @models_ttl_ms,
+      fn -> OrcaHub.Cluster.rpc(node, __MODULE__, :thinking_levels_for, [backend, model]) end
+    )
+    |> list_or_fallback([])
+  rescue
+    _ -> []
+  end
+
+  @doc """
+  Whether `level` is one of the presets `thinking_levels_for/3` offers for
+  this backend + model on `node`. `nil`/`""` (the backend default) is always
+  valid.
+  """
+  @spec valid_thinking_level?(term, String.t() | nil, String.t() | nil, node | String.t() | nil) ::
+          boolean
+  def valid_thinking_level?(_backend_ref, _model, level, _node) when level in [nil, ""], do: true
+
+  def valid_thinking_level?(backend_ref, model, level, node) do
+    Enum.any?(thinking_levels_for(backend_ref, model, node), fn {id, _} -> id == level end)
+  end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   # rpc/5 refuses a nil/unavailable target node by returning
   # {:error, :node_unassigned | {:node_unavailable, _}} rather than raising

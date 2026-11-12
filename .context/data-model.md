@@ -53,6 +53,7 @@ erDiagram
         string title "agent-set (start_session/report_progress title); else first-prompt truncation at turn end"
         string status "ready|idle|running|waiting|error|compacting"
         string model
+        string thinking_level "raw backend preset (Backend.thinking_levels_for/3); nil = backend default"
         string backend "claude|codex|pi"
         string kind "session|memory_extraction; hidden from index/search_sessions by default"
         boolean orchestrator
