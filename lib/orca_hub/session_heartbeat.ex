@@ -37,6 +37,15 @@ defmodule OrcaHub.SessionHeartbeat do
   `"session:<id>"` as `{:message_queue, items}`, with `items` in
   `list_queued_messages/1`'s shape (`[]` once the queue is gone).
 
+  The session page's Tree view shows a queued count on every member of the
+  tree. It reads them all in one call, `queued_message_counts/1`. It does not
+  subscribe to each member's own topic, so every queue change is ALSO
+  broadcast on the aggregate `"sessions"` topic as
+  `{session_id, {:message_queue_changed, count}}` (`0` once the queue is
+  gone). Every `"sessions"` subscriber must ignore or cheaply handle that
+  payload; `SessionLive.Index`, which reloads on any payload, has its own
+  clause that skips it.
+
   The escalation timer is anchored to the OLDEST message still queued.
   Removing or sending the head item re-arms it from the new head's own
   `queued_at`, so a message left behind by Send now gets its full
@@ -218,6 +227,22 @@ defmodule OrcaHub.SessionHeartbeat do
     GenServer.call(__MODULE__, {:list_queued_messages, session_id})
   catch
     :exit, _ -> []
+  end
+
+  @doc """
+  How many messages are queued for each of `session_ids`, as
+  `%{session_id => count}`. A session with nothing queued is left out, so an
+  empty map means nothing in the list is queued.
+
+  One call for a whole set of sessions (the session page's Tree view reads
+  every member of a tree with it), never one call per session. A pure read:
+  it does not upgrade a pre-ORCAHUB3-139 entry, since counting one needs no
+  item ids. `%{}` if this GenServer is not running or doesn't answer in time.
+  """
+  def queued_message_counts(session_ids) when is_list(session_ids) do
+    GenServer.call(__MODULE__, {:queued_message_counts, session_ids})
+  catch
+    :exit, _ -> %{}
   end
 
   @doc """
@@ -422,6 +447,18 @@ defmodule OrcaHub.SessionHeartbeat do
   def handle_call({:list_queued_messages, session_id}, _from, state) do
     state = upgrade_queue(state, session_id)
     {:reply, queue_items(Map.get(state.message_queue, session_id)), state}
+  end
+
+  # Plain strings (pre-ORCAHUB3-139 items) count the same as item maps.
+  @impl true
+  def handle_call({:queued_message_counts, session_ids}, _from, state) do
+    counts =
+      for {session_id, %{messages: [_ | _] = messages}} <-
+            Map.take(state.message_queue, session_ids),
+          into: %{},
+          do: {session_id, length(messages)}
+
+    {:reply, counts, state}
   end
 
   @impl true
@@ -1135,12 +1172,23 @@ defmodule OrcaHub.SessionHeartbeat do
   defp queue_items(entry), do: entry.messages
 
   # Goes to the session's own topic, where SessionLive.Show listens; PubSub
-  # spans the cluster, so a page on any node sees it.
+  # spans the cluster, so a page on any node sees it. The count also goes to
+  # the aggregate "sessions" topic, for Tree views showing this session as
+  # one member of a tree (see the moduledoc). This process subscribes to
+  # "sessions" too and drops its own count in the handle_info catch-all.
   defp broadcast_queue(session_id, entry) do
+    items = queue_items(entry)
+
     Phoenix.PubSub.broadcast(
       OrcaHub.PubSub,
       "session:#{session_id}",
-      {:message_queue, queue_items(entry)}
+      {:message_queue, items}
+    )
+
+    Phoenix.PubSub.broadcast(
+      OrcaHub.PubSub,
+      "sessions",
+      {session_id, {:message_queue_changed, length(items)}}
     )
   end
 

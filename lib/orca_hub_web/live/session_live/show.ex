@@ -266,6 +266,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
      |> assign(:view, :conversation)
      |> assign(:tree_subagents, %{})
      |> assign(:tree_has_subagents, %{})
+     |> assign(:tree_member_ids, MapSet.new())
+     |> assign(:tree_queued_counts, %{})
      |> assign(:tree_compose, nil)
      |> assign(:sessions_topic_subscribed, false)
      |> load_session_todos(tool_state)
@@ -597,7 +599,8 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
   # Tree view data: the tree containing this session (root ancestor + every
   # descendant, archived included — see Sessions.get_session_tree/1 doc),
-  # plus the cross-session message-edge overlay for that same membership.
+  # plus the cross-session message-edge overlay for that same membership and
+  # each member's queued-message count (one batch read for the whole tree).
   defp load_tree_data(socket) do
     {root, members} = HubRPC.get_session_tree(socket.assigns.session.id)
     session_ids = Enum.map(members, & &1.id)
@@ -607,9 +610,11 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     socket
     |> assign(:tree_root, root)
+    |> assign(:tree_member_ids, MapSet.new(session_ids))
     |> assign(:tree_children_by_parent, TreeComponents.group_children_by_parent(members))
     |> assign(:tree_edges_by_session, TreeComponents.build_edges(interactions, sessions_by_id))
     |> assign(:tree_has_subagents, HubRPC.session_ids_with_subagents(session_ids))
+    |> assign(:tree_queued_counts, HubRPC.queued_message_counts(session_ids))
   end
 
   # -- mount helpers --
@@ -3223,6 +3228,25 @@ defmodule OrcaHubWeb.SessionLive.Show do
 
     if socket.assigns.view == :tree do
       {:noreply, load_tree_data(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Aggregate "sessions" topic: a session's queued-message count changed
+  # (SessionHeartbeat's broadcast_queue/2). Only the Tree view's queued
+  # badges can change, so re-read just the counts, and only when the session
+  # is a member of this tree, instead of reloading the whole tree. The
+  # payload's own count is not used: a count read by load_tree_data/1 can
+  # overtake an older broadcast still in this mailbox, so a fresh read after
+  # the broadcast is the one that is never stale.
+  @impl true
+  def handle_info({session_id, {:message_queue_changed, _count}}, socket)
+      when is_binary(session_id) do
+    if socket.assigns.view == :tree and
+         MapSet.member?(socket.assigns.tree_member_ids, session_id) do
+      counts = HubRPC.queued_message_counts(MapSet.to_list(socket.assigns.tree_member_ids))
+      {:noreply, assign(socket, :tree_queued_counts, counts)}
     else
       {:noreply, socket}
     end

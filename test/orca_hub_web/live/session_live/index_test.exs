@@ -251,4 +251,38 @@ defmodule OrcaHubWeb.SessionLive.IndexTest do
       refute has_element?(view, indicator(pi))
     end
   end
+
+  # SessionHeartbeat puts every queued-message count change on the aggregate
+  # "sessions" topic, for the session page's Tree view. This page shows no
+  # queue, and its catch-all reloads every session on any other payload.
+  test "a queued-message count on the \"sessions\" topic does not reload the page", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, ~p"/sessions")
+
+    test_pid = self()
+    lv_pid = view.pid
+    handler_id = "index-queued-queries-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:orca_hub, :repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        if self() == lv_pid, do: send(test_pid, {:lv_query, metadata[:source]})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    id = Ecto.UUID.generate()
+    send(view.pid, {id, {:message_queue_changed, 2}})
+    render(view)
+    refute_received {:lv_query, _}
+
+    # Not vacuous: a status change on the same topic does reload.
+    send(view.pid, {id, {:status, :idle}})
+    render(view)
+    assert_received {:lv_query, _}
+  end
 end

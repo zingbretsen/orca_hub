@@ -1486,6 +1486,128 @@ defmodule OrcaHubWeb.SessionLive.ShowTest do
     end
   end
 
+  # Messages queued behind a busy worker's turn (SessionHeartbeat's `:queue`
+  # delivery) show as a count badge on that worker's tree node, so a glance
+  # at the tree says which worker to stop to let them through.
+  describe "Tree view — queued-message badges" do
+    setup %{claude_session: root} do
+      dir = Path.join(System.tmp_dir!(), "tree_queued_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      # "running" with no runner: a `:queue` send is held, never delivered.
+      create = fn attrs ->
+        {:ok, session} =
+          Sessions.create_session(
+            Map.merge(
+              %{directory: dir, backend: "claude", runner_node: Atom.to_string(node())},
+              attrs
+            )
+          )
+
+        on_exit(fn ->
+          # Archiving drops any queue the test left behind, and its timer.
+          Phoenix.PubSub.broadcast(OrcaHub.PubSub, "sessions", {session.id, {:status, :archived}})
+
+          if SessionSupervisor.session_alive?(session.id),
+            do: SessionSupervisor.stop_session(session.id)
+        end)
+
+        session
+      end
+
+      busy =
+        create.(%{parent_session_id: root.id, title: "Busy Worker", status: "running"})
+
+      quiet = create.(%{parent_session_id: root.id, title: "Quiet Worker", status: "running"})
+      outsider = create.(%{title: "Not In This Tree", status: "running"})
+
+      %{busy: busy, quiet: quiet, outsider: outsider}
+    end
+
+    defp queue_to(session, texts) do
+      for text <- texts do
+        assert {:queued, "running"} =
+                 OrcaHub.Cluster.send_message(node(), session.id, text, :queue)
+      end
+    end
+
+    defp badge(id), do: "#queued-badge-#{id}"
+
+    test "a member with queued messages shows a count badge; members without show none", %{
+      conn: conn,
+      claude_session: root,
+      busy: busy,
+      quiet: quiet
+    } do
+      queue_to(busy, ["check the build", "then the deploy", "and report"])
+
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+
+      assert has_element?(view, badge(busy.id), "3 queued")
+
+      assert has_element?(
+               view,
+               ~s(#{badge(busy.id)}[title="3 messages queued — delivered when the current turn ends"])
+             )
+
+      # On the node's own primary line, not a descendant's.
+      assert has_element?(view, "#session-node-#{busy.id} #{badge(busy.id)}")
+
+      refute has_element?(view, badge(quiet.id))
+      refute has_element?(view, badge(root.id))
+    end
+
+    test "a queue change on a member updates its badge live, re-reading counts only", %{
+      conn: conn,
+      claude_session: root,
+      busy: busy,
+      outsider: outsider
+    } do
+      {:ok, view, _html} = live(conn, ~p"/sessions/#{root.id}?view=tree")
+      refute has_element?(view, badge(busy.id))
+
+      # The count read is a SessionHeartbeat call, not a query: a DB query
+      # from the LiveView here would mean a whole-tree reload.
+      test_pid = self()
+      lv_pid = view.pid
+      handler_id = "tree-queued-queries-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:orca_hub, :repo, :query],
+        fn _event, _measurements, metadata, _config ->
+          if self() == lv_pid, do: send(test_pid, {:lv_query, metadata[:source]})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      queue_to(busy, ["first"])
+      assert has_element?(view, badge(busy.id), "1 queued")
+
+      assert has_element?(
+               view,
+               ~s(#{badge(busy.id)}[title="1 message queued — delivered when the current turn ends"])
+             )
+
+      queue_to(busy, ["second"])
+      assert has_element?(view, badge(busy.id), "2 queued")
+
+      # A session outside this tree changes nothing here.
+      queue_to(outsider, ["elsewhere"])
+      refute has_element?(view, badge(outsider.id))
+
+      for item <- SessionHeartbeat.list_queued_messages(busy.id) do
+        assert :ok = SessionHeartbeat.remove_queued_message(busy.id, item.id)
+      end
+
+      refute has_element?(view, badge(busy.id))
+      refute_received {:lv_query, _}
+    end
+  end
+
   describe "windowed message feed" do
     defp feed_text_msg(text) do
       %{"type" => "assistant", "message" => %{"content" => [%{"type" => "text", "text" => text}]}}

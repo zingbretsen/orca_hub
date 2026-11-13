@@ -527,6 +527,15 @@ defmodule OrcaHub.HubRPC do
     end
   end
 
+  # The Tree view's queued badges: one call for the whole tree. An older
+  # hub without it yields `%{}` (no badges), not a raise.
+  def queued_message_counts(session_ids) do
+    case tolerant_call(OrcaHub.SessionHeartbeat, :queued_message_counts, [session_ids]) do
+      counts when is_map(counts) -> counts
+      {:error, _} -> %{}
+    end
+  end
+
   def remove_queued_message(session_id, message_id),
     do: tolerant_call(OrcaHub.SessionHeartbeat, :remove_queued_message, [session_id, message_id])
 

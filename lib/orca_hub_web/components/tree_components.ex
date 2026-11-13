@@ -153,6 +153,8 @@ defmodule OrcaHubWeb.TreeComponents do
   attr :edges_by_session, :map, required: true
   attr :subagents, :map, required: true
   attr :has_subagents, :map, required: true
+  # `%{session_id => count}` of queued messages; a missing id has none.
+  attr :queued_counts, :map, default: %{}
   attr :current_session_id, :string, required: true
 
   def tree_view(assigns) do
@@ -164,6 +166,7 @@ defmodule OrcaHubWeb.TreeComponents do
         edges_by_session={@edges_by_session}
         subagents={@subagents}
         has_subagents={@has_subagents}
+        queued_counts={@queued_counts}
         current_session_id={@current_session_id}
       />
     </div>
@@ -175,6 +178,7 @@ defmodule OrcaHubWeb.TreeComponents do
   attr :edges_by_session, :map, required: true
   attr :subagents, :map, required: true
   attr :has_subagents, :map, required: true
+  attr :queued_counts, :map, required: true
   attr :current_session_id, :string, required: true
 
   defp tree_node(assigns) do
@@ -187,6 +191,7 @@ defmodule OrcaHubWeb.TreeComponents do
       |> assign(:edges, edges)
       |> assign(:subagent_list, Map.get(assigns.subagents, assigns.session.id))
       |> assign(:subagent_count, Map.get(assigns.has_subagents, assigns.session.id))
+      |> assign(:queued_count, Map.get(assigns.queued_counts, assigns.session.id, 0))
       |> assign(:current?, assigns.session.id == assigns.current_session_id)
 
     ~H"""
@@ -211,7 +216,7 @@ defmodule OrcaHubWeb.TreeComponents do
                 name="hero-chevron-right-micro"
                 class="size-4 shrink-0 transition-transform group-open/node:rotate-90"
               />
-              <.node_title_and_badges session={@session} />
+              <.node_title_and_badges session={@session} queued_count={@queued_count} />
             </summary>
             <div class="ml-3 sm:ml-6 mt-0.5">
               <.node_chips_and_subagents
@@ -228,6 +233,7 @@ defmodule OrcaHubWeb.TreeComponents do
                   edges_by_session={@edges_by_session}
                   subagents={@subagents}
                   has_subagents={@has_subagents}
+                  queued_counts={@queued_counts}
                   current_session_id={@current_session_id}
                 />
               </div>
@@ -236,7 +242,7 @@ defmodule OrcaHubWeb.TreeComponents do
         <% else %>
           <div class="flex items-center gap-1.5 rounded-lg px-1.5 py-1 min-w-0 flex-1">
             <span class="size-4 shrink-0"></span>
-            <.node_title_and_badges session={@session} />
+            <.node_title_and_badges session={@session} queued_count={@queued_count} />
           </div>
         <% end %>
         <.compose_button session={@session} />
@@ -258,7 +264,13 @@ defmodule OrcaHubWeb.TreeComponents do
   # else (status word, backend, model, runner node, archived, progress
   # phase) — replaces the old pile of wrapping outline badges, which is what
   # made mobile nodes sprawl over many lines.
+  #
+  # The one exception is the queued badge: it stays on the primary line,
+  # after the title, because it is what someone scans the tree for ("is a
+  # busy worker holding messages back?"). `shrink-0`, so a long title
+  # truncates before the badge does.
   attr :session, :map, required: true
+  attr :queued_count, :integer, default: 0
 
   defp node_title_and_badges(assigns) do
     assigns = assign(assigns, :meta_line, node_meta_line(assigns.session))
@@ -277,6 +289,14 @@ defmodule OrcaHubWeb.TreeComponents do
         >
           {@session.title || @session.directory}
         </.link>
+        <span
+          :if={@queued_count > 0}
+          id={"queued-badge-#{@session.id}"}
+          class="badge badge-xs badge-warning gap-0.5 shrink-0 whitespace-nowrap"
+          title={queued_badge_title(@queued_count)}
+        >
+          <.icon name="hero-clock-micro" class="size-3" />{@queued_count} queued
+        </span>
       </div>
       <div :if={@meta_line != ""} class="text-xs text-base-content/50 truncate pl-4">
         {@meta_line}
@@ -284,6 +304,14 @@ defmodule OrcaHubWeb.TreeComponents do
     </div>
     """
   end
+
+  @doc """
+  Tooltip for a tree node's queued badge (see `node_title_and_badges/1`).
+  """
+  def queued_badge_title(1), do: "1 message queued — delivered when the current turn ends"
+
+  def queued_badge_title(count),
+    do: "#{count} messages queued — delivered when the current turn ends"
 
   defp node_meta_line(session) do
     [

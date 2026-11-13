@@ -71,5 +71,30 @@ defmodule OrcaHub.HubRPCTest do
     test "the same slow call succeeds under a longer custom timeout" do
       assert HubRPC.call(:timer, :sleep, [200], timeout: 5_000) == :ok
     end
+
+    # The session page's Tree view reads these on every tree load. A hub
+    # that can't answer means "no badges", never a crashed page.
+    test "queued_message_counts/1 yields %{} from an older hub that lacks it", %{
+      peer_node: peer_node
+    } do
+      # An empty module under SessionHeartbeat's name stands in for an older
+      # hub's build. Compiled from Erlang forms, so it never loads on THIS
+      # node; loaded on the peer before anything there autoloads the real one.
+      forms = [{:attribute, 1, :module, OrcaHub.SessionHeartbeat}, {:attribute, 1, :export, []}]
+      {:ok, mod, bin} = :compile.forms(forms, [:binary])
+      assert {:module, ^mod} = :erpc.call(peer_node, :code, :load_binary, [mod, ~c"older", bin])
+
+      # A bare erpc call to it raises, as HubRPC.call/3 would.
+      assert_raise ErlangError, fn ->
+        :erpc.call(peer_node, OrcaHub.SessionHeartbeat, :queued_message_counts, [[]])
+      end
+
+      assert HubRPC.queued_message_counts([Ecto.UUID.generate()]) == %{}
+    end
+
+    test "queued_message_counts/1 yields %{} when the hub's SessionHeartbeat isn't running" do
+      # The bare peer has the current code but runs no OrcaHub processes.
+      assert HubRPC.queued_message_counts([Ecto.UUID.generate()]) == %{}
+    end
   end
 end

@@ -473,6 +473,94 @@ defmodule OrcaHub.SessionHeartbeatMessageQueueTest do
     end
   end
 
+  # The session page's Tree view shows a queued count on each member of the
+  # tree: one batch read for the whole tree, kept current by a count on the
+  # aggregate "sessions" topic (it does not subscribe to each member's own
+  # topic).
+  describe "queued counts for the Tree view" do
+    setup %{dir: dir} do
+      sessions =
+        for _ <- 1..3 do
+          {:ok, session} = running_session(dir, %{backend: "claude"})
+          on_exit(fn -> stop_if_alive(session.id) end)
+
+          on_exit(fn ->
+            Phoenix.PubSub.broadcast(
+              OrcaHub.PubSub,
+              "sessions",
+              {session.id, {:status, :archived}}
+            )
+          end)
+
+          session
+        end
+
+      {:ok, sessions: sessions}
+    end
+
+    defp queue_texts!(session, texts) do
+      for text <- texts do
+        assert {:queued, "running"} = Cluster.send_message(node(), session.id, text, :queue)
+      end
+    end
+
+    test "queued_message_counts/1 counts the listed sessions and leaves out empty ones", %{
+      sessions: [a, b, idle]
+    } do
+      ids = [a.id, b.id, idle.id, Ecto.UUID.generate()]
+      assert SessionHeartbeat.queued_message_counts(ids) == %{}
+
+      queue_texts!(a, ["one", "two", "three"])
+      queue_texts!(b, ["only"])
+
+      assert SessionHeartbeat.queued_message_counts(ids) == %{a.id => 3, b.id => 1}
+      assert SessionHeartbeat.queued_message_counts([b.id]) == %{b.id => 1}
+      assert SessionHeartbeat.queued_message_counts([]) == %{}
+
+      # The HubRPC wrapper the Tree view calls returns the same map (a local
+      # apply on the hub; an older hub without the function yields %{}).
+      assert OrcaHub.HubRPC.queued_message_counts(ids) == %{a.id => 3, b.id => 1}
+    end
+
+    test "every queue change also broadcasts the new count on the \"sessions\" topic", %{
+      sessions: [session | _]
+    } do
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "session:#{session.id}")
+      id = session.id
+
+      queue_texts!(session, ["first", "second"])
+      assert_receive {^id, {:message_queue_changed, 1}}
+      assert_receive {^id, {:message_queue_changed, 2}}
+
+      # The session's own topic still gets the full item list, unchanged.
+      assert_receive {:message_queue, [%{text: "first"}]}
+      assert_receive {:message_queue, [%{text: "first"}, %{text: "second"}]}
+
+      [first, second] = SessionHeartbeat.list_queued_messages(id)
+      assert :ok = SessionHeartbeat.remove_queued_message(id, first.id)
+      assert_receive {^id, {:message_queue_changed, 1}}
+
+      assert :ok = SessionHeartbeat.remove_queued_message(id, second.id)
+      assert_receive {^id, {:message_queue_changed, 0}}
+      assert SessionHeartbeat.queued_message_counts([id]) == %{}
+
+      # The turn-end flush empties it too.
+      queue_texts!(session, ["third"])
+      assert_receive {^id, {:message_queue_changed, 1}}
+
+      assert {:next_state, :idle, _} =
+               SessionRunner.running(
+                 :info,
+                 {:fake_port, {:exit_status, 0}},
+                 base_data(session, %{})
+               )
+
+      # The flush delivers (starting a runner) before it broadcasts.
+      assert_receive {^id, {:message_queue_changed, 0}}, 2000
+    end
+  end
+
   # A hot code load swaps SessionHeartbeat's code but keeps its state, so a
   # batch queued by the pre-ORCAHUB3-139 code (plain-string messages, no
   # escalate_timer) meets the new code. It must be upgraded, not crashed on:
@@ -498,6 +586,15 @@ defmodule OrcaHub.SessionHeartbeatMessageQueueTest do
       end)
 
       {:ok, session: session, legacy: legacy, pid: Process.whereis(SessionHeartbeat)}
+    end
+
+    test "is counted for the Tree view without being upgraded", %{session: session, pid: pid} do
+      assert SessionHeartbeat.queued_message_counts([session.id]) == %{session.id => 2}
+
+      assert %{messages: ["legacy one", "legacy two"]} =
+               SessionHeartbeat.peek_message_queue(session.id)
+
+      assert Process.whereis(SessionHeartbeat) == pid
     end
 
     test "is listed with stable ids, and remove/enqueue work on it", %{

@@ -170,7 +170,11 @@ forever. Each queued item is `%{id, text, queued_at}` (ORCAHUB3-139):
 `"session:<id>"` and offers per-item Remove / Send now
 (`remove_queued_message/2`, `send_queued_message_now/2`, via `HubRPC`). Send
 now delivers that one item as a plain `:interrupt`, and the escalation timer
-re-arms from the new head's `queued_at`.
+re-arms from the new head's `queued_at`. The session page's Tree view shows a
+"N queued" badge on each member: it reads every member's count in one call
+(`queued_message_counts/1`) and refreshes on the count every queue change also
+puts on the aggregate `"sessions"` topic, `{session_id,
+{:message_queue_changed, count}}`.
 
 ## Assistant Deltas (live, unpersisted)
 

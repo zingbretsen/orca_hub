@@ -526,6 +526,12 @@ defmodule OrcaHubWeb.SessionLive.Index do
     {:noreply, assign(socket, undo_archive_sessions: [], undo_archive_timer: nil)}
   end
 
+  # A queued-message count (SessionHeartbeat, for the session page's Tree
+  # view). Nothing on this page shows it, so it is not worth a full reload.
+  def handle_info({_session_id, {:message_queue_changed, _count}}, socket) do
+    {:noreply, socket}
+  end
+
   def handle_info({_session_id, _payload}, socket) do
     {:noreply, reload_session_data(socket)}
   end
