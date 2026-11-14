@@ -806,7 +806,10 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             |> maybe_put_pending_question(pending_question)
             |> maybe_put_churn_detail(include_churn_detail, target_id)
             |> maybe_put_queued_messages(queued_state)
-            |> maybe_put_open_tool_call(format_open_tool_call(Map.get(tail, :open_tool_call)))
+            |> maybe_put_open_tool_call(
+              format_open_tool_call(Map.get(tail, :open_tool_call))
+              |> mark_runner_state(node, target_id)
+            )
 
           text(Jason.encode!(result))
         else
@@ -2177,6 +2180,23 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       started_at: call.started_at,
       open_for_seconds: call.open_for_seconds
     }
+  end
+
+  # A dead runner leaves its last call "open" forever (ORCAHUB3-153). Say so
+  # rather than name a command that is not running.
+  defp mark_runner_state(nil, _node, _id), do: nil
+
+  defp mark_runner_state(call, node, id) do
+    if Cluster.session_alive?(node, id) do
+      call
+    else
+      Map.put(
+        call,
+        :no_live_runner,
+        "no runner is alive for this session: the call's result was never persisted; " <>
+          "it is not necessarily still running"
+      )
+    end
   end
 
   defp maybe_put_open_tool_call(map, nil), do: map

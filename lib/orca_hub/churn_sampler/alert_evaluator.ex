@@ -577,11 +577,25 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
         "Last tool call is still open: #{call.name}#{open_call_arg(call)} " <>
           "(open #{format_open_age(call.open_for_seconds)}, since " <>
           "#{Calendar.strftime(call.started_at, "%H:%M:%S")} UTC)." <>
+          runner_note(session) <>
           if(length(calls) > 1, do: " #{length(calls) - 1} more call(s) also open.", else: "")
     end
   end
 
   defp open_call_block(_condition, _session), do: nil
+
+  # No live runner: the call's result was lost, not slow.
+  defp runner_note(session) do
+    case Cluster.runner_node_for(session) do
+      nil ->
+        ""
+
+      n ->
+        if Cluster.session_alive?(n, session.id),
+          do: "",
+          else: " No runner is alive for this session, so the result was never persisted."
+    end
+  end
 
   defp open_call_arg(%{name: "Bash", args: %{"command" => cmd}}) when is_binary(cmd),
     do: " `#{truncate_arg(cmd)}`"
