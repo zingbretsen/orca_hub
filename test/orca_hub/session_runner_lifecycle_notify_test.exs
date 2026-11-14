@@ -714,4 +714,127 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       refute is_nil(message), "expected a [Session lifecycle] idle message on the parent"
     end
   end
+
+  # ── ORCAHUB3-153: a runner that crashes mid-turn ─────────────────────────
+  # A crashed runner used to leave its session at `status: "running"` for
+  # good: no lifecycle message reached the parent, and a message queued for
+  # the session waited on a turn end that could never come (session
+  # ee21f0d5, 2026-11-14, crashed by a NUL byte in a tool result). The crash
+  # here is a call no state handles, which raises `FunctionClauseError`
+  # inside the runner: the same path as any other exception in a callback.
+  describe "runner crash mid-turn" do
+    setup %{dir: dir} do
+      {:ok, parent} = Sessions.create_session(%{directory: dir, orchestrator: true})
+
+      {:ok, child} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          title: "crash child",
+          parent_session_id: parent.id,
+          notify_parent: true
+        })
+
+      on_exit(fn ->
+        stop_if_alive(child.id)
+        stop_if_alive(parent.id)
+      end)
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+      {:ok, parent: parent, child: child}
+    end
+
+    @tag :repro
+    test "ORCAHUB3-153: a runner that crashes mid-turn sets error and tells the parent",
+         %{parent: parent, child: child} do
+      crash_mid_turn(child.id)
+
+      crashed = Sessions.get_session!(child.id)
+      assert crashed.status == "error"
+      assert crashed.error_detail =~ "runner crashed"
+      assert crashed.error_detail =~ "FunctionClauseError"
+
+      refute is_nil(
+               wait_for_message(
+                 parent.id,
+                 ~r/^\[Session lifecycle\] Child session #{child.id} \("crash child"\) is now error\. Error: .*runner crashed/s
+               )
+             ),
+             "the parent never got the error lifecycle message"
+
+      error_event =
+        Sessions.list_messages(child.id)
+        |> Enum.find(&(&1.data["type"] == "cli_error"))
+
+      assert error_event, "no feed event explains the crash"
+      assert error_event.data["message"] =~ "runner crashed"
+    end
+
+    @tag :repro
+    test "ORCAHUB3-153: a message queued before the crash is delivered after it",
+         %{child: child} do
+      crash_mid_turn(child.id, fn ->
+        assert {:queued, "running"} =
+                 OrcaHub.Cluster.send_message(
+                   node(),
+                   child.id,
+                   "follow-up queued before the crash",
+                   :queue
+                 )
+      end)
+
+      refute is_nil(wait_for_message_data(child.id, "follow-up queued before the crash", 5_000)),
+             "the queued message was never delivered after the crash"
+    end
+  end
+
+  # Starts a turn that never ends (the noop stub), then crashes the runner
+  # inside it and waits for the error broadcast.
+  defp crash_mid_turn(session_id, before_crash \\ fn -> :ok end) do
+    {:ok, pid} = SessionSupervisor.start_session(session_id)
+    assert SessionRunner.send_message(session_id, "start a long turn") == :ok
+    assert wait_for_status(session_id, "running")
+
+    before_crash.()
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      catch_exit(:gen_statem.call(pid, :orcahub3_153_crash))
+      assert_receive {^session_id, {:status, :error}}, 5_000
+    end)
+  end
+
+  defp wait_for_status(session_id, status, attempts \\ 100)
+  defp wait_for_status(_session_id, _status, 0), do: false
+
+  defp wait_for_status(session_id, status, attempts) do
+    if Sessions.get_session!(session_id).status == status do
+      true
+    else
+      Process.sleep(50)
+      wait_for_status(session_id, status, attempts - 1)
+    end
+  end
+
+  defp wait_for_message_data(session_id, text, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_for_message_data(session_id, text, deadline)
+  end
+
+  defp poll_for_message_data(session_id, text, deadline) do
+    match =
+      Sessions.list_messages(session_id)
+      |> Enum.find(&(inspect(&1.data) =~ text))
+
+    cond do
+      match ->
+        match
+
+      System.monotonic_time(:millisecond) > deadline ->
+        nil
+
+      true ->
+        Process.sleep(25)
+        poll_for_message_data(session_id, text, deadline)
+    end
+  end
 end

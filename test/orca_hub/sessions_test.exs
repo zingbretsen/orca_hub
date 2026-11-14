@@ -2469,4 +2469,46 @@ defmodule OrcaHub.SessionsTest do
       refute String.ends_with?(Sessions.truncate_excerpt(text, 400), "…")
     end
   end
+
+  # ORCAHUB3-153: Postgres cannot store U+0000 in a jsonb string. A Bash tool
+  # call that `cat`s a binary file returns NUL bytes in its `tool_result`, and
+  # persisting that message raised `Postgrex.Error` 22P05 inside the
+  # `SessionRunner`, which crashed it mid-turn (session ee21f0d5, 2026-11-14).
+  describe "create_message/1 with bytes Postgres cannot store" do
+    setup do
+      {:ok, session} =
+        Sessions.create_session(%{directory: System.tmp_dir!(), backend: "claude"})
+
+      {:ok, session: session}
+    end
+
+    defp nul_tool_result(content) do
+      %{
+        "type" => "user",
+        "message" => %{
+          "role" => "user",
+          "content" => [
+            %{"type" => "tool_result", "tool_use_id" => "toolu_153", "content" => content}
+          ]
+        }
+      }
+    end
+
+    defp stored_tool_result(message) do
+      Repo.get!(Message, message.id).data
+      |> get_in(["message", "content", Access.at(0), "content"])
+    end
+
+    @tag :repro
+    test "ORCAHUB3-153: a tool_result with a NUL byte is stored with the byte replaced",
+         %{session: session} do
+      assert {:ok, message} =
+               Sessions.create_message(%{
+                 session_id: session.id,
+                 data: nul_tool_result("(\u0000/\u0000 zstd frame")
+               })
+
+      assert stored_tool_result(message) == "(�/� zstd frame"
+    end
+  end
 end
