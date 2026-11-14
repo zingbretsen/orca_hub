@@ -1777,10 +1777,21 @@ defmodule OrcaHub.Sessions do
     %{list: tool_calls, truncated?: truncated?, total: total} =
       recent_tool_calls(session_id, limit)
 
+    open = open_tool_calls(session_id)
+    open_ids = MapSet.new(open, & &1.tool_use_id)
+
+    tool_calls =
+      Enum.map(tool_calls, fn call ->
+        if call.tool_use_id && MapSet.member?(open_ids, call.tool_use_id),
+          do: Map.put(call, :open, true),
+          else: call
+      end)
+
     result = %{
       last_assistant_text: last_assistant_text(session_id),
       recent_tool_calls: tool_calls,
-      tool_calls_truncated?: truncated?
+      tool_calls_truncated?: truncated?,
+      open_tool_call: List.last(open)
     }
 
     if truncated? do
@@ -1789,6 +1800,95 @@ defmodule OrcaHub.Sessions do
       result
     end
   end
+
+  # How many of the newest messages `open_tool_calls/1` inspects.
+  @open_call_scan_limit 40
+
+  @doc """
+  The tool calls of a session that are OPEN right now: a `tool_use` block with
+  no `tool_result` for its id yet, while a turn is in flight (session status
+  `running` or `waiting`).
+
+  Returns `[]` for any other status. After a turn ends, an unanswered
+  `tool_use` was interrupted, not open, so it is not reported. Calls from
+  before the newest real user prompt or `result` message are also ignored.
+
+  Each entry is `%{name:, args:, tool_use_id:, started_at:, open_for_seconds:}`,
+  oldest first. `started_at` is the `NaiveDateTime` of the assistant message
+  that carried the block. Parallel calls give several entries.
+
+  Reads only the newest #{@open_call_scan_limit} messages: one cheap query.
+  """
+  def open_tool_calls(session_id, now \\ NaiveDateTime.utc_now()) do
+    status =
+      Repo.one(from(s in Session, where: s.id == ^session_id, select: s.status))
+
+    if status in ["running", "waiting"] do
+      from(m in Message,
+        where:
+          m.session_id == ^session_id and
+            fragment("? ->> 'type' IN ('assistant', 'user', 'result')", m.data),
+        order_by: [desc: m.inserted_at, desc: m.id],
+        limit: @open_call_scan_limit
+      )
+      |> Repo.all()
+      |> Enum.reverse()
+      |> find_open_calls(now)
+    else
+      []
+    end
+  end
+
+  defp find_open_calls(messages, now) do
+    answered =
+      messages
+      |> Enum.flat_map(&content_blocks/1)
+      |> Enum.filter(&(&1["type"] == "tool_result"))
+      |> MapSet.new(& &1["tool_use_id"])
+
+    boundary =
+      messages
+      |> Enum.filter(&turn_boundary?/1)
+      |> Enum.map(& &1.inserted_at)
+      |> Enum.max(NaiveDateTime, fn -> nil end)
+
+    messages
+    |> Enum.filter(&(&1.data["type"] == "assistant"))
+    |> Enum.filter(&(is_nil(boundary) or NaiveDateTime.compare(&1.inserted_at, boundary) != :lt))
+    |> Enum.flat_map(fn m ->
+      m
+      |> content_blocks()
+      |> Enum.filter(&(&1["type"] == "tool_use" and is_binary(&1["id"])))
+      |> Enum.reject(&MapSet.member?(answered, &1["id"]))
+      |> Enum.map(fn b ->
+        %{
+          name: b["name"],
+          args: b["input"],
+          tool_use_id: b["id"],
+          started_at: m.inserted_at,
+          open_for_seconds: max(NaiveDateTime.diff(now, m.inserted_at, :second), 0)
+        }
+      end)
+    end)
+  end
+
+  defp content_blocks(%Message{data: data}) do
+    data
+    |> get_in(["message", "content"])
+    |> List.wrap()
+    |> Enum.filter(&is_map/1)
+  end
+
+  # A `result` message ends a turn. A user message with no tool_result block is
+  # a real prompt that starts one.
+  defp turn_boundary?(%Message{data: %{"type" => "result"}}), do: true
+
+  defp turn_boundary?(%Message{data: %{"type" => "user"}} = m) do
+    blocks = content_blocks(m)
+    not Enum.any?(blocks, &(&1["type"] == "tool_result"))
+  end
+
+  defp turn_boundary?(_), do: false
 
   defp recent_tool_calls(session_id, limit) do
     from(m in Message,
@@ -1813,7 +1913,7 @@ defmodule OrcaHub.Sessions do
     |> get_in(["message", "content"])
     |> List.wrap()
     |> Enum.filter(&(is_map(&1) && &1["type"] == "tool_use"))
-    |> Enum.map(&%{name: &1["name"], input: &1["input"]})
+    |> Enum.map(&%{name: &1["name"], input: &1["input"], tool_use_id: &1["id"]})
   end
 
   @doc """

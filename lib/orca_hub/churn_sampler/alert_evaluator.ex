@@ -554,6 +554,7 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     # unless the next line says what is actually wrong.
     [
       header,
+      open_call_block(condition, session),
       edit_failure_block(condition, signals[:edit_failure]),
       detail_block,
       surgery_block(condition, churn, detail_block),
@@ -562,6 +563,42 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join("\n\n")
   end
+
+  # ORCAHUB3-153: a stalled session is often blocked inside one tool call that
+  # never returns. Name it. One small query, and only when a stall alert fires.
+  defp open_call_block("stall", session) do
+    case Sessions.open_tool_calls(session.id) do
+      [] ->
+        nil
+
+      calls ->
+        call = List.last(calls)
+
+        "Last tool call is still open: #{call.name}#{open_call_arg(call)} " <>
+          "(open #{format_open_age(call.open_for_seconds)}, since " <>
+          "#{Calendar.strftime(call.started_at, "%H:%M:%S")} UTC)." <>
+          if(length(calls) > 1, do: " #{length(calls) - 1} more call(s) also open.", else: "")
+    end
+  end
+
+  defp open_call_block(_condition, _session), do: nil
+
+  defp open_call_arg(%{name: "Bash", args: %{"command" => cmd}}) when is_binary(cmd),
+    do: " `#{truncate_arg(cmd)}`"
+
+  defp open_call_arg(%{args: args}) when is_map(args) and map_size(args) > 0,
+    do: " `#{truncate_arg(inspect(args, limit: 5))}`"
+
+  defp open_call_arg(_), do: ""
+
+  defp truncate_arg(str) do
+    str = str |> String.replace(~r/\s+/, " ") |> String.replace("`", "'")
+    if String.length(str) > 160, do: String.slice(str, 0, 160) <> "…", else: str
+  end
+
+  defp format_open_age(s) when s >= 3600, do: "#{div(s, 3600)}h#{div(rem(s, 3600), 60)}m"
+  defp format_open_age(s) when s >= 60, do: "#{div(s, 60)}m"
+  defp format_open_age(s), do: "#{s}s"
 
   defp metric_line("churn", _session, _activity, churn, detail) do
     calls = churn.tool_calls_15m || 0

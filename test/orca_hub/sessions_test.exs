@@ -486,7 +486,6 @@ defmodule OrcaHub.SessionsTest do
       }
     end
 
-    @tag :repro
     test "ORCAHUB3-153: a running session with an unanswered tool_use reports it as open",
          %{project: project} do
       session = create_session(project, %{status: "running"})

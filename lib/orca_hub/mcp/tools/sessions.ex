@@ -374,7 +374,11 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "input), self-reported progress (phase/note from report_progress, if any), " <>
             "activity metadata (message/tool-call counts over the last 5/15/30 minutes, " <>
             "last_activity_at), last_commit (git HEAD of its directory, if it's a repo), " <>
-            "churn (a server-side heuristic block with churn_suspected flag), and if the " <>
+            "churn (a server-side heuristic block with churn_suspected flag), an " <>
+            "`open_tool_call` object (name, args, started_at, open_for_seconds) when a " <>
+            "running or waiting session has a tool call with no result yet (the matching " <>
+            "recent_tool_calls entry has open: true) — a long open_for_seconds means the " <>
+            "worker is blocked inside that call, and the call may be hung — and if the " <>
             "session is blocked on an unanswered question, a `pending_question` object whose " <>
             "`kind` and `answer_with` say how to answer it: \"pi_dialog\" (id, method, title, " <>
             "message, options—options may be null; answer via answer_session_question) or " <>
@@ -802,6 +806,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             |> maybe_put_pending_question(pending_question)
             |> maybe_put_churn_detail(include_churn_detail, target_id)
             |> maybe_put_queued_messages(queued_state)
+            |> maybe_put_open_tool_call(format_open_tool_call(Map.get(tail, :open_tool_call)))
 
           text(Jason.encode!(result))
         else
@@ -2156,10 +2161,26 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   @run_elixir_tool_names ~w(run_elixir mcp__orca__run_elixir)
   @max_tail_extracted_tools 10
 
-  defp format_tool_call(%{name: name, input: input}) do
+  defp format_tool_call(%{name: name, input: input} = call) do
     %{name: name, args: cap_tail_arg(inspect(input, pretty: false, limit: 20))}
     |> maybe_put_extracted_tools(name, input)
+    |> then(&if(Map.get(call, :open), do: Map.put(&1, :open, true), else: &1))
   end
+
+  # An open call: a tool_use with no tool_result yet, in a turn that is in flight.
+  defp format_open_tool_call(nil), do: nil
+
+  defp format_open_tool_call(%{} = call) do
+    %{
+      name: call.name,
+      args: cap_tail_arg(inspect(call.args, pretty: false, limit: 20)),
+      started_at: call.started_at,
+      open_for_seconds: call.open_for_seconds
+    }
+  end
+
+  defp maybe_put_open_tool_call(map, nil), do: map
+  defp maybe_put_open_tool_call(map, call), do: Map.put(map, :open_tool_call, call)
 
   # Static peek at which `Tools.*` a run_elixir snippet references — cheap
   # legibility for an orchestrator skimming get_session_tail, not a runtime

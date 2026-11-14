@@ -236,6 +236,8 @@ defmodule OrcaHubWeb.SessionApiController do
         session_id: session.id,
         last_assistant_text: tail.last_assistant_text,
         recent_tool_calls: tail.recent_tool_calls,
+        # Nil unless a running/waiting turn has a tool_use with no result yet.
+        open_tool_call: Map.get(tail, :open_tool_call),
         # `tool_calls_truncated?` in Elixir; the trailing `?` is dropped for
         # the wire so clients get an ordinary JSON identifier.
         tool_calls_truncated: tail.tool_calls_truncated?,

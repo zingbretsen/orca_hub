@@ -292,7 +292,6 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
   end
 
   describe "evaluate/3 — stall alert names an open tool call" do
-    @tag :repro
     test "ORCAHUB3-153: the alert names the open Bash call, its command and age" do
       orchestrator_id = Ecto.UUID.generate()
       stalled = plain_session("alert-stall-open", %{status: "running"})
