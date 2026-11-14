@@ -1590,6 +1590,25 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
   end
 
   describe "get_session_tail" do
+    test "a running session with no runner reports a stale status", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "running"})
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} =
+               SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      assert Jason.decode!(text)["runner"] ==
+               "Runner process not alive; status 'running' is stale."
+    end
+
+    test "an idle session has no runner line", %{dir: dir, state: state} do
+      {:ok, target} = Sessions.create_session(%{directory: dir, status: "idle"})
+
+      assert %{"content" => [%{"text" => text}]} =
+               SessionsTool.call("get_session_tail", %{"session_id" => target.id}, state)
+
+      refute Map.has_key?(Jason.decode!(text), "runner")
+    end
+
     test "returns status, last assistant text, and recent tool calls without touching the runner",
          %{dir: dir, state: state} do
       {:ok, target} =

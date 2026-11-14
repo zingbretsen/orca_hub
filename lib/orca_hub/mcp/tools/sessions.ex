@@ -2186,7 +2186,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
   # stale (the runner crashed). Say so; an unreachable node is not "dead".
   defp maybe_put_runner_state(map, %{status: status} = session, node)
        when status in ["running", "waiting"] do
-    case Cluster.runner_liveness(node, session.id) do
+    # nil node = never assigned: the local node, as everywhere else for unset records.
+    case Cluster.runner_liveness(node || node(), session.id) do
       :alive ->
         map
 

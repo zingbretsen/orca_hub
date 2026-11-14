@@ -447,12 +447,6 @@ defmodule OrcaHub.Cluster do
 
   def stop_session(n, session_id), do: rpc(n, SessionSupervisor, :stop_session, [session_id])
 
-  # Normalizes rpc/5's {:error, :node_unassigned | {:node_unavailable, _}} to
-  # `false` so `unless`/`if Cluster.session_alive?(...)` keeps working as a
-  # plain boolean check — "can't confirm it's alive" reads as "not alive"
-  # here, which is what callers want (e.g. don't skip start_session because
-  # of a stale truthy error tuple; let start_session's own rpc/5 gate refuse
-  # the unavailable node cleanly instead).
   @doc """
   Three-way runner liveness: `:alive`, `:dead` (node reachable, no runner) or
   `:node_unavailable` (cannot tell). Never re-routes to another node.
@@ -465,6 +459,12 @@ defmodule OrcaHub.Cluster do
     end
   end
 
+  # Normalizes rpc/5's {:error, :node_unassigned | {:node_unavailable, _}} to
+  # `false` so `unless`/`if Cluster.session_alive?(...)` keeps working as a
+  # plain boolean check — "can't confirm it's alive" reads as "not alive"
+  # here, which is what callers want (e.g. don't skip start_session because
+  # of a stale truthy error tuple; let start_session's own rpc/5 gate refuse
+  # the unavailable node cleanly instead).
   def session_alive?(n, session_id) do
     case rpc(n, SessionSupervisor, :session_alive?, [session_id]) do
       {:error, _} -> false

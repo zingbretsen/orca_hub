@@ -334,6 +334,31 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
     end
   end
 
+  describe "evaluate/3 — stall alert with an unreachable runner node" do
+    test "says the node is unavailable, never that the runner is not alive" do
+      stalled =
+        plain_session("alert-stall-offline", %{
+          status: "running",
+          runner_node: "debian@totally-offline-host"
+        })
+
+      assert OrcaHub.Cluster.runner_liveness(
+               OrcaHub.Cluster.runner_node_for(stalled),
+               stalled.id
+             ) == :node_unavailable
+
+      subscription =
+        subscribe(Ecto.UUID.generate(), %{
+          session_ids: [stalled.id],
+          conditions: %{"stall" => true}
+        })
+
+      assert {[alert], _} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "Runner node unavailable"
+      refute alert.message =~ "not alive"
+    end
+  end
+
   describe "evaluate/3 — stall condition" do
     test "fires only for a running session with zero recent activity" do
       orchestrator_id = Ecto.UUID.generate()
