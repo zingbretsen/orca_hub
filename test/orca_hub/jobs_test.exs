@@ -54,6 +54,12 @@ defmodule OrcaHub.JobsTest do
       assert {:ok, job} = Jobs.create_job(valid_attrs())
       assert job.session_id == nil
     end
+
+    test "ORCAHUB3-153: a NUL byte in a command metric's progress_note is replaced, not rejected" do
+      assert {:ok, job} = Jobs.create_job(valid_attrs())
+      assert {:ok, _} = Jobs.update_job(job, %{progress_note: "part 3\u00008"})
+      assert Jobs.get_job(job.id).progress_note == "part 3�8"
+    end
   end
 
   describe "list_nonterminal_jobs_for_node/1" do

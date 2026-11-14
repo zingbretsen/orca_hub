@@ -89,6 +89,9 @@ defmodule OrcaHub.Jobs.Job do
       :started_at,
       :finished_at
     ])
+    # ORCAHUB3-153: a "command" progress metric stores the command's raw
+    # output here, and a NUL byte in it fails the update inside JobWatcher.
+    |> update_change(:progress_note, &OrcaHub.Sessions.Message.storable/1)
     |> validate_required([:directory, :runner_node, :command])
     |> validate_inclusion(:status, @statuses)
     |> validate_inclusion(:progress_kind, @progress_kinds, message: "is invalid")
