@@ -167,6 +167,14 @@ defmodule OrcaHub.Sessions.Session do
     # built-in tools" API run mode, see field doc above) into nil, indistinguishable
     # from "not set".
     |> cast(attrs, [:tools], empty_values: [])
+    # ORCAHUB3-153: free text from the agent CLI (error_detail is its stderr
+    # or result text) or from the agent itself (report_progress). A NUL byte
+    # here fails the update, and the runner writes error_detail on its own
+    # error path.
+    |> update_change(:error_detail, &OrcaHub.Sessions.Message.storable/1)
+    |> update_change(:progress_note, &OrcaHub.Sessions.Message.storable/1)
+    |> update_change(:progress_phase, &OrcaHub.Sessions.Message.storable/1)
+    |> update_change(:title, &OrcaHub.Sessions.Message.storable/1)
     |> validate_required([:directory])
     |> validate_inclusion(:status, ~w(ready idle running waiting error compacting))
     |> validate_inclusion(:backend, @backends)

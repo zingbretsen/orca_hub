@@ -162,7 +162,9 @@ defmodule OrcaHub.ClaudeImport do
             %{
               id: Ecto.UUID.generate(),
               session_id: session.id,
-              data: entry,
+              # insert_all skips Message.changeset/2, so scrub here
+              # (ORCAHUB3-153: a NUL byte fails the whole batch).
+              data: Message.storable(entry),
               inserted_at: msg_ts,
               updated_at: msg_ts
             }

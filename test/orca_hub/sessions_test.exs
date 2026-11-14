@@ -2499,7 +2499,6 @@ defmodule OrcaHub.SessionsTest do
       |> get_in(["message", "content", Access.at(0), "content"])
     end
 
-    @tag :repro
     test "ORCAHUB3-153: a tool_result with a NUL byte is stored with the byte replaced",
          %{session: session} do
       assert {:ok, message} =
@@ -2509,6 +2508,54 @@ defmodule OrcaHub.SessionsTest do
                })
 
       assert stored_tool_result(message) == "(�/� zstd frame"
+    end
+
+    test "invalid UTF-8 is replaced too, so it cannot fail the JSON encode", %{session: session} do
+      assert {:ok, message} =
+               Sessions.create_message(%{
+                 session_id: session.id,
+                 data: nul_tool_result(<<"gz:", 0x1F, 0x8B, 0xFF, "end">>)
+               })
+
+      assert stored_tool_result(message) == <<"gz:", 0x1F, "��end">>
+    end
+
+    test "nested values and map keys are scrubbed; structs and scalars are kept",
+         %{session: session} do
+      ts = ~N[2026-11-14 13:52:58.114000]
+
+      data = %{
+        "type" => "system",
+        "timestamp" => ts,
+        "items" => [%{"k\u0000ey" => ["a\u0000", 7, true, nil]}]
+      }
+
+      assert {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+      assert message.data["timestamp"] == ts
+
+      assert Repo.get!(Message, message.id).data["items"] == [
+               %{"k�ey" => ["a�", 7, true, nil]}
+             ]
+    end
+
+    test "clean data is stored unchanged", %{session: session} do
+      data = nul_tool_result("plain text, émoji-free, ✓")
+      assert {:ok, message} = Sessions.create_message(%{session_id: session.id, data: data})
+      assert stored_tool_result(message) == "plain text, émoji-free, ✓"
+    end
+
+    test "a NUL byte in error_detail or a progress note does not fail the session update",
+         %{session: session} do
+      assert {:ok, updated} =
+               Sessions.update_session(session, %{
+                 status: "error",
+                 error_detail: "stderr: \u0000\u0000 binary",
+                 progress_note: "note \u0000"
+               })
+
+      reloaded = Sessions.get_session!(updated.id)
+      assert reloaded.error_detail == "stderr: �� binary"
+      assert reloaded.progress_note == "note �"
     end
   end
 end
