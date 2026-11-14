@@ -724,7 +724,12 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
   # inside the runner: the same path as any other exception in a callback.
   describe "runner crash mid-turn" do
     setup %{dir: dir} do
-      {:ok, parent} = Sessions.create_session(%{directory: dir, orchestrator: true})
+      {:ok, parent} =
+        Sessions.create_session(%{
+          directory: dir,
+          orchestrator: true,
+          runner_node: Atom.to_string(node())
+        })
 
       {:ok, child} =
         Sessions.create_session(%{
@@ -732,7 +737,8 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
           backend: "claude",
           title: "crash child",
           parent_session_id: parent.id,
-          notify_parent: true
+          notify_parent: true,
+          runner_node: Atom.to_string(node())
         })
 
       on_exit(fn ->
@@ -744,7 +750,6 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       {:ok, parent: parent, child: child}
     end
 
-    @tag :repro
     test "ORCAHUB3-153: a runner that crashes mid-turn sets error and tells the parent",
          %{parent: parent, child: child} do
       crash_mid_turn(child.id)
@@ -768,11 +773,14 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       assert error_event, "no feed event explains the crash"
       assert error_event.data["message"] =~ "runner crashed"
+
+      # The parent notification is delivered as a turn: let that call
+      # return before the test (and its sandbox connection) ends.
+      assert wait_for_status(parent.id, "running")
     end
 
-    @tag :repro
     test "ORCAHUB3-153: a message queued before the crash is delivered after it",
-         %{child: child} do
+         %{parent: parent, child: child} do
       crash_mid_turn(child.id, fn ->
         assert {:queued, "running"} =
                  OrcaHub.Cluster.send_message(
@@ -785,6 +793,11 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
       refute is_nil(wait_for_message_data(child.id, "follow-up queued before the crash", 5_000)),
              "the queued message was never delivered after the crash"
+
+      # Let the async parent notification land inside this test: after the
+      # test exits, its sandbox connection is gone and the delivery fails.
+      refute is_nil(wait_for_message(parent.id, ~r/is now error/))
+      assert wait_for_status(parent.id, "running")
     end
   end
 

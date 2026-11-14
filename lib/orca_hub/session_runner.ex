@@ -1180,7 +1180,7 @@ defmodule OrcaHub.SessionRunner do
   # ── Terminate ────────────────────────────────────────────────────────
 
   @impl true
-  def terminate(_reason, _state, data) do
+  def terminate(reason, _state, data) do
     # Close a warm streaming process if one is open (linked ports auto-close, but
     # be explicit so the child claude process is reaped promptly).
     if data[:port] do
@@ -1211,7 +1211,118 @@ defmodule OrcaHub.SessionRunner do
 
     Streaming.WarmPool.release(data.session_id)
     AgentPresence.remove(data.directory, data.session_id)
+    end_crashed_turn(reason, data)
     :ok
+  end
+
+  # ORCAHUB3-153: a crash mid-turn used to leave the row "running" for good.
+  # The supervisor restarts the runner (it is :permanent), but the new one
+  # comes up :idle and never touches the status, so nothing ended the turn:
+  # no lifecycle message went to the parent, and SessionHeartbeat held any
+  # queued message for a turn end that could not come (session ee21f0d5,
+  # crashed by a NUL byte in a tool result).
+  #
+  # The row and the feed event are written here, before the process exits,
+  # so the restarted runner and every reader already see "error". The
+  # turn-end side effects wait for the exit: the {:status, :error}
+  # broadcast makes SessionHeartbeat deliver its queue at once, and a
+  # delivery that reached this dying process would be lost. By the time a
+  # delivery can look up the runner, the supervisor has already handled
+  # this EXIT and started the replacement.
+  #
+  # Never raises: the cleanup above has already run, and a failure here must
+  # not hide the original crash in the log.
+  defp end_crashed_turn(reason, data) do
+    if crash?(reason) and is_binary(Map.get(data, :session_id)) do
+      session = db_call(data, :get_session!, [data.session_id])
+
+      if turn_in_flight?(session) do
+        detail = crash_detail(reason)
+        error_event = stamp(%{"type" => "cli_error", "exit_code" => nil, "message" => detail})
+        persist_message(data, error_event)
+
+        error_detail = truncate_error_detail(detail)
+
+        {:ok, _} =
+          db_call(data, :update_session, [session, %{status: "error", error_detail: error_detail}])
+
+        Logger.error(
+          "[SessionRunner] session #{data.session_id} crashed mid-turn; status set to error"
+        )
+
+        # Only these fields go into the task, not the whole runner `data`.
+        session_id = data.session_id
+        errored = %{session | status: "error", error_detail: error_detail}
+
+        turn = %{
+          turn_started_at: Map.get(data, :turn_started_at),
+          first_prompt: Map.get(data, :first_prompt)
+        }
+
+        after_exit(fn ->
+          broadcast(session_id, {:event, error_event})
+          broadcast(session_id, {:status, :error})
+          handle_turn_end(errored, :error, turn)
+        end)
+      end
+    end
+
+    :ok
+  catch
+    kind, failure ->
+      Logger.error(
+        "[SessionRunner] could not end the crashed turn of session " <>
+          "#{inspect(Map.get(data, :session_id))}: #{Exception.format(kind, failure)}"
+      )
+
+      :ok
+  end
+
+  defp crash?(:normal), do: false
+  defp crash?(:shutdown), do: false
+  defp crash?({:shutdown, _}), do: false
+  defp crash?(_reason), do: true
+
+  # A Claude "waiting" (an unanswered AskUserQuestion) has already ended its
+  # turn, and the restarted runner rebuilds its questions from that status.
+  defp turn_in_flight?(%{status: status}) when status in ["running", "compacting"], do: true
+  defp turn_in_flight?(session), do: Session.waiting_mid_turn?(session)
+
+  defp crash_detail(reason) do
+    "The session runner crashed on #{node()} and this turn was lost. " <>
+      "Send a message to continue. Cause: #{crash_cause(reason)}"
+  end
+
+  # :erpc.call wraps an exception raised on the hub (the NUL-byte crash was
+  # a Postgrex.Error raised there) as {:exception, exception, stacktrace}.
+  defp crash_cause({:exception, exception, _stacktrace}) when is_exception(exception),
+    do: crash_cause(exception)
+
+  defp crash_cause(exception) when is_exception(exception),
+    do: "#{inspect(exception.__struct__)}: #{Exception.message(exception)}"
+
+  # terminate/3 gets a VM error such as :function_clause or {:badmatch, _}
+  # raw; normalize/2 names it. Anything it cannot name stays inspected.
+  defp crash_cause(reason) do
+    case Exception.normalize(:error, reason) do
+      %ErlangError{} -> inspect(reason, limit: 20, printable_limit: 500)
+      exception -> crash_cause(exception)
+    end
+  end
+
+  # Runs `fun` in a supervised task once the calling process has exited.
+  defp after_exit(fun) do
+    runner = self()
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      ref = Process.monitor(runner)
+
+      receive do
+        {:DOWN, ^ref, :process, ^runner, _} -> fun.()
+      after
+        60_000 -> fun.()
+      end
+    end)
   end
 
   # ── Private ──────────────────────────────────────────────────────────
