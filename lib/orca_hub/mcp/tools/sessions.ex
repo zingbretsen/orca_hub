@@ -541,10 +541,12 @@ defmodule OrcaHub.MCP.Tools.Sessions do
           # Cluster.send_message/4 handles that internally for BOTH delivery
           # modes (directly for :interrupt; via SessionHeartbeat.deliver_or_queue/2's
           # own immediate-delivery branch for :queue).
+          {delivery, delivered_note} = deliver_now_if_runner_dead(delivery, node, session)
+
           case Cluster.send_message(node, target_id, signed_message, delivery) do
             :ok ->
               maybe_record_interaction(sender_id, session.id, "message")
-              text("Message delivered to session #{target_id}")
+              text("Message delivered to session #{target_id}" <> delivered_note)
 
             {:queued, queued_status} ->
               maybe_record_interaction(sender_id, session.id, "message")
@@ -555,8 +557,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
               # Fall back to generic message if accessor returns nil (older hub / race)
               queued_info =
                 if queued_state do
-                  "Queue depth: #{queued_state.count} message(s), escalation ETA: " <>
-                    "#{queued_state.escalates_at}. "
+                  "Queue depth: #{queued_state.count} message(s). "
                 else
                   ""
                 end
@@ -565,7 +566,7 @@ defmodule OrcaHub.MCP.Tools.Sessions do
                 "Message queued for session #{target_id} (currently \"#{queued_status}\"). " <>
                   queued_info <>
                   "It will be delivered once the session's current turn ends, or " <>
-                  "automatically escalated to an interrupt if that takes too long."
+                  escalation_text(queued_state)
               )
 
             {:error, reason} ->
@@ -2181,6 +2182,38 @@ defmodule OrcaHub.MCP.Tools.Sessions do
       open_for_seconds: call.open_for_seconds
     }
   end
+
+  # ORCAHUB3-153: a queued message waits for the target's turn to end. With
+  # no runner behind a "running" row that turn can never end, and the message
+  # sat until the queue escalated. Deliver it at once instead (delivery
+  # starts a runner) and say why. An unreachable node is not "dead": queue.
+  defp deliver_now_if_runner_dead(:queue, node, %{status: status} = session)
+       when status in ["running", "compacting"] do
+    # nil node = never assigned: the local node, as in maybe_put_runner_state/3.
+    case Cluster.runner_liveness(node || node(), session.id) do
+      :dead ->
+        {:interrupt,
+         ". No runner was alive behind its \"#{status}\" status, so no turn could " <>
+           "end; the message was delivered at once instead of queued."}
+
+      _ ->
+        {:queue, ""}
+    end
+  end
+
+  defp deliver_now_if_runner_dead(delivery, _node, _session), do: {delivery, ""}
+
+  # The escalation time in UTC plus how far away it is: a bare timestamp
+  # left the reader to work out the time zone and the wait.
+  defp escalation_text(%{escalates_at: %DateTime{} = at}) do
+    minutes = max(div(DateTime.diff(at, DateTime.utc_now(), :second) + 59, 60), 0)
+
+    "as an interrupt at #{at |> DateTime.truncate(:second) |> DateTime.to_iso8601()} " <>
+      "(in about #{minutes} min) if that turn is still running then."
+  end
+
+  defp escalation_text(_queued_state),
+    do: "automatically escalated to an interrupt if that takes too long."
 
   # ORCAHUB3-153: a "running"/"waiting" status with no runner behind it is
   # stale (the runner crashed). Say so; an unreachable node is not "dead".

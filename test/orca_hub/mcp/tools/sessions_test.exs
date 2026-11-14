@@ -1071,6 +1071,9 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
         })
 
       on_exit(fn -> stop_if_alive(target.id) end)
+      # A live runner: with none, the "running" row is stale and the message
+      # is delivered at once (see the ORCAHUB3-153 test below).
+      {:ok, _pid} = SessionSupervisor.start_session(target.id)
 
       result =
         SessionsTool.call(
@@ -1082,8 +1085,8 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       assert text =~ "queued"
       assert text =~ "\"running\""
+      assert text =~ ~r/as an interrupt at \S+Z \(in about 15 min\)/
       assert Sessions.list_messages(target.id) == []
-      refute SessionSupervisor.session_alive?(target.id)
       # Queueing is still a real (recorded) delivery from the sender's POV.
       assert [interaction] = Sessions.list_session_interactions(recipient_session_id: target.id)
       assert interaction.kind == "message"
@@ -1100,6 +1103,7 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
         })
 
       on_exit(fn -> stop_if_alive(target.id) end)
+      {:ok, _pid} = SessionSupervisor.start_session(target.id)
 
       result =
         SessionsTool.call(
@@ -1110,7 +1114,37 @@ defmodule OrcaHub.MCP.Tools.SessionsTest do
 
       assert %{"isError" => false, "content" => [%{"text" => text}]} = result
       assert text =~ "queued"
+      assert Sessions.list_messages(target.id) == []
+    end
+
+    test "ORCAHUB3-153: queue delivers at once when no runner is alive behind a running status",
+         %{state: state, dir: dir} do
+      {:ok, target} =
+        Sessions.create_session(%{
+          directory: dir,
+          backend: "claude",
+          status: "running",
+          runner_node: Atom.to_string(node())
+        })
+
+      on_exit(fn -> stop_if_alive(target.id) end)
       refute SessionSupervisor.session_alive?(target.id)
+
+      result =
+        with_fake_claude_on_path(fn ->
+          SessionsTool.call(
+            "send_message_to_session",
+            %{"session_id" => target.id, "message" => "are you stuck?"},
+            state
+          )
+        end)
+
+      assert %{"isError" => false, "content" => [%{"text" => text}]} = result
+      assert text =~ "delivered"
+      assert text =~ "No runner was alive"
+      refute text =~ "queued for session"
+      assert SessionSupervisor.session_alive?(target.id)
+      assert OrcaHub.HubRPC.queued_message_state(target.id) == nil
     end
 
     test "delivery: \"interrupt\" delivers immediately (today's behavior), cold-starting a runner",
