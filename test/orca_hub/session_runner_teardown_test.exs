@@ -143,6 +143,151 @@ defmodule OrcaHub.SessionRunnerTeardownTest do
     assert Enum.all?(Map.values(second), &alive?/1), "the replacement CLI's tree must survive"
   end
 
+  # ── ORCAHUB3-153: a CLI that ignores an interrupt is stopped by force ──
+  # Each test writes its own stub CLI into the session dir. The streaming
+  # one answers the first stdin line (Claude's warm-up turn), then reads and
+  # ignores everything, interrupts included. The one-shot one ignores SIGINT.
+  describe "forced stop after an ignored interrupt" do
+    setup %{dir: dir} do
+      Application.put_env(:orca_hub, :interrupt_force_stop_ms, 300)
+      on_exit(fn -> Application.delete_env(:orca_hub, :interrupt_force_stop_ms) end)
+
+      Phoenix.PubSub.subscribe(OrcaHub.PubSub, "sessions")
+      {:ok, dir: dir}
+    end
+
+    test "ORCAHUB3-153: a streaming turn that ignores the stop button ends in error",
+         %{session: session, dir: dir} do
+      use_stub(dir, :answers_warmup_only)
+      {:ok, _pid} = SessionSupervisor.start_session(session.id)
+      assert :ok = SessionRunner.send_message(session.id, "a turn that hangs")
+      assert wait_until(fn -> stub_reads?(dir, 2) end), "the real turn never reached the stub"
+
+      assert :ok = SessionRunner.interrupt(session.id)
+      session_id = session.id
+      assert_receive {^session_id, {:status, :error}}, 5_000
+
+      errored = Sessions.get_session!(session.id)
+      assert errored.status == "error"
+      assert errored.error_detail =~ "stopped the agent CLI by force"
+      assert assert_all_dead(%{"cli" => stub_pid(dir)}) == :ok
+    end
+
+    test "ORCAHUB3-153: a message that interrupted an ignoring CLI is re-sent after the forced stop",
+         %{session: session, dir: dir} do
+      use_stub(dir, :answers_warmup_only)
+      {:ok, _pid} = SessionSupervisor.start_session(session.id)
+      assert :ok = SessionRunner.send_message(session.id, "a turn that hangs")
+      assert wait_until(fn -> stub_reads?(dir, 2) end), "the real turn never reached the stub"
+      first_cli = stub_pid(dir)
+
+      assert :ok = SessionRunner.send_message(session.id, "the urgent correction")
+      session_id = session.id
+      assert_receive {^session_id, {:status, :error}}, 5_000
+
+      assert wait_until(fn ->
+               Sessions.list_messages(session.id)
+               |> Enum.any?(fn m ->
+                 text = inspect(m.data)
+                 text =~ "stopped the agent CLI by force" and text =~ "the urgent correction"
+               end)
+             end),
+             "the interrupting message was never re-sent"
+
+      assert wait_until(fn -> Sessions.get_session!(session.id).status == "running" end)
+      assert assert_all_dead(%{"cli" => first_cli}) == :ok
+
+      assert Enum.any?(
+               Sessions.list_messages(session.id),
+               &(&1.data["type"] == "cli_error" and
+                   &1.data["message"] =~ "stopped the agent CLI by force")
+             )
+    end
+
+    test "ORCAHUB3-153: a one-shot CLI that ignores SIGINT is killed", %{
+      session: session,
+      dir: dir
+    } do
+      {:ok, session} = Sessions.update_session(session, %{streaming: false})
+      use_stub(dir, :ignores_sigint)
+      {:ok, _pid} = SessionSupervisor.start_session(session.id)
+      assert :ok = SessionRunner.send_message(session.id, "a turn that hangs")
+      assert wait_until(fn -> stub_pid(dir) != nil end)
+
+      assert :ok = SessionRunner.interrupt(session.id)
+      session_id = session.id
+      assert_receive {^session_id, {:status, :error}}, 5_000
+
+      assert Sessions.get_session!(session.id).error_detail =~ "stopped the agent CLI by force"
+    end
+
+    test "ORCAHUB3-153: a deadline left over from an earlier turn does not stop the next one",
+         %{session: session, dir: dir} do
+      # The plain noop stub: SIGINT ends it, so the interrupt is obeyed.
+      {:ok, session} = Sessions.update_session(session, %{streaming: false})
+      use_stub(dir, :obeys_sigint)
+      {:ok, _pid} = SessionSupervisor.start_session(session.id)
+      assert :ok = SessionRunner.send_message(session.id, "first turn")
+      assert wait_until(fn -> stub_pid(dir) != nil end)
+
+      assert :ok = SessionRunner.interrupt(session.id)
+      session_id = session.id
+      assert_receive {^session_id, {:status, ended}} when ended in [:idle, :error], 5_000
+      File.rm!(Path.join(dir, "orca-stub-cli"))
+
+      assert :ok = SessionRunner.send_message(session.id, "second turn")
+      assert wait_until(fn -> stub_pid(dir) != nil end)
+      second_cli = stub_pid(dir)
+
+      # Well past the first turn's 300 ms deadline.
+      Process.sleep(800)
+      assert alive?(second_cli), "the first turn's deadline killed the second turn's CLI"
+      assert Sessions.get_session!(session.id).status == "running"
+    end
+  end
+
+  # The stub records its pid in orca-stub-cli and appends one line to
+  # orca-stub-reads per stdin line it reads (until it stops reading lines).
+  defp use_stub(dir, mode) do
+    body =
+      case mode do
+        :answers_warmup_only ->
+          """
+          IFS= read -r _line
+          echo x >> "$PWD/orca-stub-reads"
+          printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"stub-153"}'
+          while IFS= read -r _line; do echo x >> "$PWD/orca-stub-reads"; done
+          """
+
+        :ignores_sigint ->
+          "trap '' INT\nexec cat >/dev/null\n"
+
+        :obeys_sigint ->
+          "exec cat >/dev/null\n"
+      end
+
+    path = Path.join(dir, "claude-stub-153.sh")
+    File.write!(path, "#!/bin/sh\necho $$ > \"$PWD/orca-stub-cli\"\n" <> body)
+    File.chmod!(path, 0o755)
+    Application.put_env(:orca_hub, :claude_executable, path)
+  end
+
+  defp stub_pid(dir) do
+    with {:ok, body} <- File.read(Path.join(dir, "orca-stub-cli")),
+         {pid, _} <- Integer.parse(String.trim(body)) do
+      pid
+    else
+      _ -> nil
+    end
+  end
+
+  defp stub_reads?(dir, count) do
+    case File.read(Path.join(dir, "orca-stub-reads")) do
+      {:ok, body} -> length(String.split(body, "\n", trim: true)) >= count
+      _ -> false
+    end
+  end
+
   # ── helpers ──────────────────────────────────────────────────────────
 
   defp wait_until(fun, timeout_ms \\ 5_000) do

@@ -1076,6 +1076,33 @@ defmodule OrcaHub.SessionRunner do
   def running(:cast, {:update_tool_policy, allow, deny}, data),
     do: apply_flag_changes_running(data, tool_allowlist: allow, tool_denylist: deny)
 
+  # ORCAHUB3-153: the turn an interrupt was sent in is still running at its
+  # deadline, so the CLI ignored the interrupt. Stop it by force. The note
+  # rides error_output, which becomes the error_detail and feed card of a
+  # turn that ends in error. With prompts pending, one-shot resumes with them
+  # and streaming re-sends them (see handle_streaming_exit/3).
+  def running(:info, {:interrupt_deadline, turn}, %{turn_started_at: turn, port: port} = data)
+      when not is_nil(turn) and not is_nil(port) do
+    seconds = div(interrupt_force_stop_ms(), 1000)
+
+    Logger.warning(
+      "[SessionRunner] session #{data.session_id}: the agent CLI ignored an interrupt " <>
+        "for #{seconds} s; stopping it by force"
+    )
+
+    note =
+      "OrcaHub stopped the agent CLI by force: it was still running #{seconds} s " <>
+        "after an interrupt."
+
+    data = force_stop_cli(data)
+    data = %{data | error_output: data.error_output <> "\n" <> note}
+
+    data =
+      if data.engine == :streaming, do: Map.put(data, :force_stopped, true), else: data
+
+    {:keep_state, data}
+  end
+
   def running(:cast, _msg, _data), do: :keep_state_and_data
   def running(:info, _msg, _data), do: :keep_state_and_data
 
@@ -2554,6 +2581,11 @@ defmodule OrcaHub.SessionRunner do
     # for that stream is this synthetic one.
     sweep_delta_streams(data.session_id, data.backend_state)
 
+    # ORCAHUB3-153: after a forced stop, the prompts that interrupted the
+    # turn were never written to the CLI. Only then are they re-sent: after
+    # an ordinary crash, re-sending could loop on a CLI that dies at start.
+    resend = if Map.get(data, :force_stopped), do: data.pending_prompts, else: []
+
     data =
       forget_open_dialogs(%{
         data
@@ -2566,6 +2598,7 @@ defmodule OrcaHub.SessionRunner do
           # scratch (on_open/1 again) — see spec §3.2.
           backend_state: %{}
       })
+      |> Map.delete(:force_stopped)
 
     if state == :running do
       # Crash mid-turn: surface the failure; do NOT auto-resend (avoids duplicate
@@ -2589,6 +2622,7 @@ defmodule OrcaHub.SessionRunner do
       AgentPresence.update_status(data.directory, data.session_id, "error")
 
       handle_turn_end(%{session | status: "error", error_detail: error_detail}, :error, data)
+      resend_after_force_stop(data.session_id, resend)
 
       {:next_state, :error, data}
     else
@@ -2759,7 +2793,7 @@ defmodule OrcaHub.SessionRunner do
       iodata -> Port.command(port, iodata)
     end
 
-    %{data | req_counter: n + 1, interrupting: true}
+    arm_interrupt_deadline(%{data | req_counter: n + 1, interrupting: true})
   end
 
   # One-shot's plain interrupt path (new message mid-turn, or explicit
@@ -2771,6 +2805,69 @@ defmodule OrcaHub.SessionRunner do
       :signal -> send_sigint(port)
       iodata -> Port.command(port, iodata)
     end
+
+    arm_interrupt_deadline(data)
+  end
+
+  # ORCAHUB3-153: an interrupt is a request the CLI can ignore. Nothing
+  # followed up on one, so a turn whose CLI never answered it stayed
+  # "running" for good. Every interrupt now arms a deadline for the turn it
+  # was sent in. See running(:info, {:interrupt_deadline, _}, _). The turn's
+  # start time names it, so a deadline that outlives its turn does nothing.
+  @interrupt_force_stop_ms 60_000
+
+  defp interrupt_force_stop_ms,
+    do: Application.get_env(:orca_hub, :interrupt_force_stop_ms, @interrupt_force_stop_ms)
+
+  defp arm_interrupt_deadline(data) do
+    case Map.get(data, :turn_started_at) do
+      nil ->
+        data
+
+      turn ->
+        Process.send_after(self(), {:interrupt_deadline, turn}, interrupt_force_stop_ms())
+        data
+    end
+  end
+
+  # SIGKILL to the CLI (the wrapper exec'd it, so the port's os_pid is the
+  # CLI's) plus the reaper for whatever it started, such as a hung Bash
+  # tool's shell. The port then reports exit_status and the normal exit path
+  # ends the turn.
+  defp force_stop_cli(%{port: port} = data) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> OrcaHub.OSProcess.signal_pids([os_pid], "KILL")
+      nil -> :noop
+    end
+
+    release_spawn(data, grace_ms: 0)
+  end
+
+  # The re-send is a new turn from the :error state the exit moves to. It is
+  # made from a task, so the call queues behind that transition.
+  defp resend_after_force_stop(_session_id, []), do: :ok
+
+  defp resend_after_force_stop(session_id, prompts) do
+    prompt =
+      "[Note: your previous turn did not stop within " <>
+        "#{div(interrupt_force_stop_ms(), 1000)} s of an interrupt, so OrcaHub " <>
+        "stopped the agent CLI by force, with every process it had started. The " <>
+        "tool call in progress has no result. The message that interrupted it " <>
+        "follows below.]\n\n" <> Enum.join(prompts, "\n\n\n")
+
+    Task.Supervisor.start_child(OrcaHub.TaskSupervisor, fn ->
+      try do
+        send_message(session_id, prompt)
+      catch
+        kind, reason ->
+          Logger.warning(
+            "[SessionRunner] could not re-send the pending prompts of session " <>
+              "#{session_id} after a forced stop: #{Exception.format(kind, reason)}"
+          )
+      end
+    end)
+
+    :ok
   end
 
   # NDJSON framing for a control_request interrupt over stdin. Public for
