@@ -397,6 +397,36 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
       refute is_nil(message), "expected a [Session lifecycle] idle message on the parent"
     end
 
+    # ORCAHUB3-153: a child idle only because it waits on its own detached job
+    # must not look done to its parent.
+    @tag :repro
+    test "ORCAHUB3-153: idle is marked when the child waits on its own running job",
+         %{parent: parent, child: child, dir: dir} do
+      {:ok, job} =
+        OrcaHub.Jobs.create_job(%{
+          session_id: child.id,
+          directory: dir,
+          runner_node: Atom.to_string(node()),
+          command: "sleep 600",
+          status: "running",
+          started_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      :ok = OrcaHub.SessionHeartbeat.watch_job(child.id, job.id)
+      on_exit(fn -> OrcaHub.SessionHeartbeat.cancel(child.id) end)
+
+      assert SessionRunner.deliver_parent_notification(child, :idle, NaiveDateTime.utc_now()) ==
+               :ok
+
+      message =
+        wait_for_message(
+          parent.id,
+          ~r/is now idle, waiting on its own job #{job.id} \(sleep 600, running \d+m\)\. Not done yet/
+        )
+
+      refute is_nil(message), "expected a marked idle message naming the pending job"
+    end
+
     test "idle is still delivered when the interaction predates turn start",
          %{parent: parent, child: child} do
       stale_interaction_at = NaiveDateTime.add(NaiveDateTime.utc_now(), -600, :second)
