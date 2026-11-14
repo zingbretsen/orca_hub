@@ -399,7 +399,6 @@ defmodule OrcaHub.SessionRunnerLifecycleNotifyTest do
 
     # ORCAHUB3-153: a child idle only because it waits on its own detached job
     # must not look done to its parent.
-    @tag :repro
     test "ORCAHUB3-153: idle is marked when the child waits on its own running job",
          %{parent: parent, child: child, dir: dir} do
       {:ok, job} =

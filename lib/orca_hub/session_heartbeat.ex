@@ -186,6 +186,37 @@ defmodule OrcaHub.SessionHeartbeat do
   end
 
   @doc """
+  Jobs `session_id` is still waiting on: ids from standalone `watch_job/2`
+  watches and from its heartbeat's `watch_job_ids`, resolved through
+  `OrcaHub.Jobs` so a job already in a terminal status is dropped. Returns
+  `[%{id:, command:, started_at:}]`, oldest id order not guaranteed.
+
+  Used by the parent lifecycle notification (ORCAHUB3-153) to mark a child
+  that is idle only because it waits on its own job. The GenServer call only
+  reads ids; the job lookups run in the caller.
+  """
+  def pending_jobs(session_id) do
+    session_id
+    |> pending_job_ids()
+    |> Enum.flat_map(fn job_id ->
+      case Jobs.get_job(job_id) do
+        %{status: status} = job ->
+          if job_terminal?(status),
+            do: [],
+            else: [%{id: job.id, command: job.command, started_at: job.started_at}]
+
+        nil ->
+          []
+      end
+    end)
+  end
+
+  @doc false
+  def pending_job_ids(session_id) do
+    GenServer.call(__MODULE__, {:pending_job_ids, session_id})
+  end
+
+  @doc """
   Delivers `message` to `session_id` under ORCAHUB3-29's `:queue` semantics
   (backs `Cluster.send_message/4`'s `:queue` mode) — never interrupts.
 
@@ -516,6 +547,20 @@ defmodule OrcaHub.SessionHeartbeat do
       end
 
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:pending_job_ids, session_id}, _from, state) do
+    standalone =
+      for {job_id, %{session_id: ^session_id}} <- state.job_watches, do: job_id
+
+    grouped =
+      case Map.get(state.heartbeats, session_id) do
+        %{watch_job_ids: ids} when is_list(ids) -> ids
+        _ -> []
+      end
+
+    {:reply, Enum.uniq(standalone ++ grouped), state}
   end
 
   @impl true

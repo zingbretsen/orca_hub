@@ -1603,7 +1603,19 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp lifecycle_message(session, :idle) do
-    "[Session lifecycle] Child session #{session.id} (\"#{lifecycle_title(session)}\") is now idle."
+    base =
+      "[Session lifecycle] Child session #{session.id} (\"#{lifecycle_title(session)}\") is now idle"
+
+    case pending_own_jobs(session) do
+      [] ->
+        base <> "."
+
+      jobs ->
+        base <>
+          ", waiting on its own " <>
+          Enum.map_join(jobs, "; ", &describe_pending_job/1) <>
+          ". Not done yet: it wakes when #{if match?([_], jobs), do: "the job ends", else: "a job ends"}."
+    end
   end
 
   defp lifecycle_message(session, :error) do
@@ -1617,6 +1629,32 @@ defmodule OrcaHub.SessionRunner do
   end
 
   defp lifecycle_title(session), do: session.title || "untitled"
+
+  # ORCAHUB3-153: jobs the idle child still waits on. Fails open to [] (plain
+  # idle message) on any lookup failure.
+  defp pending_own_jobs(session) do
+    case fail_open_on_lookup_failure("pending-job lookup for child #{session.id}", fn ->
+           HubRPC.call(SessionHeartbeat, :pending_jobs, [session.id])
+         end) do
+      jobs when is_list(jobs) -> jobs
+      _ -> []
+    end
+  end
+
+  defp describe_pending_job(job) do
+    command = job.command |> to_string() |> String.replace(~r/\s+/, " ") |> String.trim()
+
+    command =
+      if String.length(command) > 60, do: String.slice(command, 0, 57) <> "...", else: command
+
+    "job #{job.id} (#{command}#{pending_job_age(job.started_at)})"
+  end
+
+  defp pending_job_age(%DateTime{} = started_at) do
+    ", running #{max(div(DateTime.diff(DateTime.utc_now(), started_at), 60), 0)}m"
+  end
+
+  defp pending_job_age(_), do: ""
 
   # Caps the persisted `error_detail` column so a runaway stderr dump can't
   # bloat the sessions table — the message feed already has the full text.
