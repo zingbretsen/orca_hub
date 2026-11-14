@@ -31,6 +31,31 @@ Phoenix LiveView app for managing Claude Code sessions via a web UI.
   Whoever picks this up should decide what the expectation SHOULD be
   (runner_nodes, or runner_nodes plus distinct rendered original_nodes) rather
   than tuning the constant.
+- **Newly observed 2026-11-13 at `d149031`: `OrcaHub.TerminalRunnerTest` loses
+  3-4 tests under full-suite load**, all of them inside the same helper,
+  `run_in_shell!/3`, flunking "condition never became true". Seen in two of
+  two full runs (4 failures, then 3); passes 17/17 in isolation. The failing
+  tests are the three process-tree-kill cases plus "idle teardown PTY output
+  alone keeps it running".
+
+  Root cause is a PTY readiness race, NOT slowness, and the distinction
+  matters because it rules out the obvious fix. `start!/1` waits for bash to
+  appear as a child of the `script` process, but a visible bash is not a bash
+  that has finished setting up its terminal and is reading stdin.
+  `run_in_shell!/3` writes the command immediately afterwards, so under load
+  the keystrokes land before bash reads and are discarded; the subsequent poll
+  of `/proc/<pid>/task/<pid>/children` then waits out its window for a child
+  that will never spawn. Confirmed by widening `eventually/2` from 50 attempts
+  (1s) to 250 (5s) and re-running: still 3 failures, same helper, and the
+  failure is on the FIRST `run_in_shell!` after `start!`. That change was
+  reverted, since more patience cannot recover lost input.
+
+  A real fix needs a readiness handshake before the first write (write a
+  sentinel and wait for its echo, or wait for a prompt) rather than a bigger
+  timeout. Do NOT "fix" it by re-writing the command in a loop until a child
+  appears — a write that does land spawns a real `sleep 300`, so a retry loop
+  risks leaking stray processes. Left for whoever owns `TerminalRunner`;
+  `e11b383` shows this file was already being hand-tuned for timing.
 - Repro tests are excluded by default too. A defect issue ships with a test that FAILS in the current unfixed state — executable proof the defect is real, and a free regression test once fixed. Tag it `@tag :repro`, start the test name with the issue key (e.g. `test "ORCAHUB3-24: an artifact with no data does not pre-seed a truthy window.ORCA_DATA"`), and put it in the file where it will permanently live — not a quarantine dir. Run them on demand with `mix test --only repro`; they are EXPECTED to be red, that is the point, so never add one to the flake list.
 - **The fixing commit removes the `@tag :repro` line in the same commit as the fix**, silently converting the repro into a normal regression test. A `:repro` tag left on a fixed defect means the test stops running.
 - Newly observed 2026-10-30 (one failure in two full runs at `02e0115`):
