@@ -329,6 +329,8 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
       assert alert.message =~ "Last tool call is still open: Bash"
       assert alert.message =~ "kubectl -n lab exec deploy/gitea"
       assert alert.message =~ "open 23m"
+      # No runner exists for this fixture session: the stale status is named.
+      assert alert.message =~ "Runner process not alive; status 'running' is stale."
     end
   end
 

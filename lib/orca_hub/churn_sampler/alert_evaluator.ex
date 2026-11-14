@@ -565,36 +565,39 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluator do
   end
 
   # ORCAHUB3-153: a stalled session is often blocked inside one tool call that
-  # never returns. Name it. One small query, and only when a stall alert fires.
+  # never returns, or has a dead runner behind a stale "running" status. Name
+  # both. Small queries, and only when a stall alert fires.
   defp open_call_block("stall", session) do
-    case Sessions.open_tool_calls(session.id) do
-      [] ->
-        nil
+    liveness = Cluster.runner_liveness(Cluster.runner_node_for(session) || node(), session.id)
 
-      calls ->
-        call = List.last(calls)
-
-        "Last tool call is still open: #{call.name}#{open_call_arg(call)} " <>
-          "(open #{format_open_age(call.open_for_seconds)}, since " <>
-          "#{Calendar.strftime(call.started_at, "%H:%M:%S")} UTC)." <>
-          runner_note(session) <>
-          if(length(calls) > 1, do: " #{length(calls) - 1} more call(s) also open.", else: "")
+    [runner_line(liveness, session), open_call_line(Sessions.open_tool_calls(session.id))]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+    |> case do
+      "" -> nil
+      text -> text
     end
   end
 
   defp open_call_block(_condition, _session), do: nil
 
-  # No live runner: the call's result was lost, not slow.
-  defp runner_note(session) do
-    case Cluster.runner_node_for(session) do
-      nil ->
-        ""
+  defp runner_line(:dead, session),
+    do: "Runner process not alive; status '#{session.status}' is stale."
 
-      n ->
-        if Cluster.session_alive?(n, session.id),
-          do: "",
-          else: " No runner is alive for this session, so the result was never persisted."
-    end
+  defp runner_line(:node_unavailable, _session),
+    do: "Runner node unavailable; cannot tell whether the session is alive."
+
+  defp runner_line(:alive, _session), do: nil
+
+  defp open_call_line([]), do: nil
+
+  defp open_call_line(calls) do
+    call = List.last(calls)
+
+    "Last tool call is still open: #{call.name}#{open_call_arg(call)} " <>
+      "(open #{format_open_age(call.open_for_seconds)}, since " <>
+      "#{Calendar.strftime(call.started_at, "%H:%M:%S")} UTC)." <>
+      if(length(calls) > 1, do: " #{length(calls) - 1} more call(s) also open.", else: "")
   end
 
   defp open_call_arg(%{name: "Bash", args: %{"command" => cmd}}) when is_binary(cmd),

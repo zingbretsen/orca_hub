@@ -378,7 +378,9 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             "`open_tool_call` object (name, args, started_at, open_for_seconds) when a " <>
             "running or waiting session has a tool call with no result yet (the matching " <>
             "recent_tool_calls entry has open: true) — a long open_for_seconds means the " <>
-            "worker is blocked inside that call, and the call may be hung — and if the " <>
+            "worker is blocked inside that call, and the call may be hung — a `runner` " <>
+            "line when a running/waiting status has no live runner (stale status) or the " <>
+            "node is unavailable — and if the " <>
             "session is blocked on an unanswered question, a `pending_question` object whose " <>
             "`kind` and `answer_with` say how to answer it: \"pi_dialog\" (id, method, title, " <>
             "message, options—options may be null; answer via answer_session_question) or " <>
@@ -806,10 +808,8 @@ defmodule OrcaHub.MCP.Tools.Sessions do
             |> maybe_put_pending_question(pending_question)
             |> maybe_put_churn_detail(include_churn_detail, target_id)
             |> maybe_put_queued_messages(queued_state)
-            |> maybe_put_open_tool_call(
-              format_open_tool_call(Map.get(tail, :open_tool_call))
-              |> mark_runner_state(node, target_id)
-            )
+            |> maybe_put_open_tool_call(format_open_tool_call(Map.get(tail, :open_tool_call)))
+            |> maybe_put_runner_state(session, node)
 
           text(Jason.encode!(result))
         else
@@ -2182,22 +2182,23 @@ defmodule OrcaHub.MCP.Tools.Sessions do
     }
   end
 
-  # A dead runner leaves its last call "open" forever (ORCAHUB3-153). Say so
-  # rather than name a command that is not running.
-  defp mark_runner_state(nil, _node, _id), do: nil
+  # ORCAHUB3-153: a "running"/"waiting" status with no runner behind it is
+  # stale (the runner crashed). Say so; an unreachable node is not "dead".
+  defp maybe_put_runner_state(map, %{status: status} = session, node)
+       when status in ["running", "waiting"] do
+    case Cluster.runner_liveness(node, session.id) do
+      :alive ->
+        map
 
-  defp mark_runner_state(call, node, id) do
-    if Cluster.session_alive?(node, id) do
-      call
-    else
-      Map.put(
-        call,
-        :no_live_runner,
-        "no runner is alive for this session: the call's result was never persisted; " <>
-          "it is not necessarily still running"
-      )
+      :dead ->
+        Map.put(map, :runner, "Runner process not alive; status '#{status}' is stale.")
+
+      :node_unavailable ->
+        Map.put(map, :runner, "Runner node unavailable; cannot tell whether it is alive.")
     end
   end
+
+  defp maybe_put_runner_state(map, _session, _node), do: map
 
   defp maybe_put_open_tool_call(map, nil), do: map
   defp maybe_put_open_tool_call(map, call), do: Map.put(map, :open_tool_call, call)
