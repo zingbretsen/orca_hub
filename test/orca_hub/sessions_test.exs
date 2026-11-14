@@ -467,6 +467,74 @@ defmodule OrcaHub.SessionsTest do
     end
   end
 
+  describe "session_tail/2 — open tool call" do
+    defp tool_use_msg(id, name, input) do
+      %{
+        "type" => "assistant",
+        "message" => %{
+          "content" => [%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}]
+        }
+      }
+    end
+
+    defp tool_result_msg(id) do
+      %{
+        "type" => "user",
+        "message" => %{
+          "content" => [%{"type" => "tool_result", "tool_use_id" => id, "content" => "ok"}]
+        }
+      }
+    end
+
+    @tag :repro
+    test "ORCAHUB3-153: a running session with an unanswered tool_use reports it as open",
+         %{project: project} do
+      session = create_session(project, %{status: "running"})
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: tool_use_msg("t1", "Read", %{"file_path" => "/a"})
+        })
+
+      {:ok, _} = Sessions.create_message(%{session_id: session.id, data: tool_result_msg("t1")})
+
+      {:ok, _} =
+        Sessions.create_message(%{
+          session_id: session.id,
+          data: tool_use_msg("t2", "Bash", %{"command" => "kubectl exec foo"})
+        })
+
+      tail = Sessions.session_tail(session.id)
+
+      assert %{name: "Bash", args: %{"command" => "kubectl exec foo"}, tool_use_id: "t2"} =
+               tail.open_tool_call
+
+      assert %NaiveDateTime{} = tail.open_tool_call.started_at
+      assert is_integer(tail.open_tool_call.open_for_seconds)
+      assert [%{open: true}] = Enum.filter(tail.recent_tool_calls, &Map.get(&1, :open))
+    end
+
+    test "no open call once the result arrived, or when the turn is not in flight",
+         %{project: project} do
+      running = create_session(project, %{status: "running"})
+      idle = create_session(project, %{status: "idle"})
+
+      for s <- [running, idle] do
+        {:ok, _} =
+          Sessions.create_message(%{
+            session_id: s.id,
+            data: tool_use_msg("x1", "Bash", %{"command" => "ls"})
+          })
+      end
+
+      {:ok, _} = Sessions.create_message(%{session_id: running.id, data: tool_result_msg("x1")})
+
+      assert Map.get(Sessions.session_tail(running.id), :open_tool_call) == nil
+      assert Map.get(Sessions.session_tail(idle.id), :open_tool_call) == nil
+    end
+  end
+
   describe "last_assistant_text/1" do
     defp text_message(text \\ "here is my reply") do
       %{

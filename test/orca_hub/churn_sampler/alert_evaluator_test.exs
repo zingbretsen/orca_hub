@@ -291,6 +291,48 @@ defmodule OrcaHub.ChurnSampler.AlertEvaluatorTest do
     end
   end
 
+  describe "evaluate/3 — stall alert names an open tool call" do
+    @tag :repro
+    test "ORCAHUB3-153: the alert names the open Bash call, its command and age" do
+      orchestrator_id = Ecto.UUID.generate()
+      stalled = plain_session("alert-stall-open", %{status: "running"})
+
+      {:ok, msg} =
+        Sessions.create_message(%{
+          session_id: stalled.id,
+          data: %{
+            "type" => "assistant",
+            "message" => %{
+              "content" => [
+                %{
+                  "type" => "tool_use",
+                  "id" => "open1",
+                  "name" => "Bash",
+                  "input" => %{"command" => "kubectl -n lab exec deploy/gitea -- cat x.log.zst"}
+                }
+              ]
+            }
+          }
+        })
+
+      old = NaiveDateTime.add(NaiveDateTime.utc_now(), -23 * 60, :second)
+
+      import Ecto.Query
+
+      OrcaHub.Repo.update_all(from(m in OrcaHub.Sessions.Message, where: m.id == ^msg.id),
+        set: [inserted_at: old]
+      )
+
+      subscription =
+        subscribe(orchestrator_id, %{session_ids: [stalled.id], conditions: %{"stall" => true}})
+
+      assert {[alert], _} = AlertEvaluator.evaluate([subscription])
+      assert alert.message =~ "Last tool call is still open: Bash"
+      assert alert.message =~ "kubectl -n lab exec deploy/gitea"
+      assert alert.message =~ "open 23m"
+    end
+  end
+
   describe "evaluate/3 — stall condition" do
     test "fires only for a running session with zero recent activity" do
       orchestrator_id = Ecto.UUID.generate()
